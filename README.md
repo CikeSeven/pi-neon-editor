@@ -8,7 +8,7 @@ This package replaces the default editor component with a `CustomEditor` subclas
 
 - Flowing rainbow border with a moving glow highlight
 - Border presets: `neon`, `ocean`, `sunset`, `matrix`, `ember`, `violet` — each defines gradient colors plus an `accent` color used by every glow/highlight effect (no hard-coded white)
-- Render modes: `flow`, `pulse`, `static`, `swing`
+- Render modes: `flow`, `pulse`, `static`, `swing`, `surge`
 - Adjustable animation speed and glow strength
 - Adjustable border size: thickness (1-4 rows), inner padding, line glyph weight
 - Optional keyword glow, e.g. make `ultrathink` shine while typing
@@ -38,7 +38,7 @@ Then control it with:
 /neon on                 Enable neon editor
 /neon off                Disable and restore the previous editor
 /neon preset ocean       Switch palette preset
-/neon mode pulse         Switch render mode: flow | pulse | static | swing
+/neon mode pulse         Switch render mode: flow | pulse | static | swing | surge
 /neon speed 120          Set frame interval in ms, range 40-300
 /neon glow 70            Set glow strength, range 0-100
 /neon thickness 2        Border height in rows, range 1-4
@@ -60,7 +60,7 @@ change it and Esc to close the menu:
 neon-editor · enter to edit, esc to close
   Turn off
   Preset — neon          → picker: neon / ocean / sunset / matrix / ember / violet
-  Mode — flow            → picker: flow / pulse / static / swing
+  Mode — flow            → picker: flow / pulse / static / swing / surge
   Speed — 70ms           → number input (40-300)
   Glow — 70              → number input (0-100)
   Thickness — 1          → picker: 1-4
@@ -101,6 +101,7 @@ effect consistently. To tune a preset, edit `PRESETS` in `index.ts`.
 | `pulse` | The gradient stays put while the whole border breathes in brightness. |
 | `static` | Frozen gradient with a fixed glow highlight at the center. No motion. |
 | `swing` | The glow highlight oscillates left-right between the two ends (triangle wave), and the gradient phase ping-pongs with it. |
+| `surge` | No accent highlight at all — the raw preset gradient itself sloshes left-right at the working comet's pace (9 columns/frame). |
 
 ## Reactive effects
 
@@ -116,7 +117,7 @@ the interactive menu (`Effects — ...` entry):
 | `working` | Between pi's `agent_start` and `agent_end` events | While the agent is generating, a bright comet with a fading trail ping-pongs fast between the two ends of the border (9 columns per frame), like a "thinking" indicator inside the frame. Stops the moment the agent finishes. |
 
 Effects only fire while neon-editor is enabled and rendering in TUI mode.
-They are layered on top of the current render mode (`flow`/`pulse`/`static`/`swing`)
+They are layered on top of the current render mode (`flow`/`pulse`/`static`/`swing`/`surge`)
 via `Math.max` blending, so they never fight the base animation.
 
 ## Border size

@@ -16,7 +16,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 type Rgb = [number, number, number];
-type NeonMode = "flow" | "pulse" | "static" | "swing";
+type NeonMode = "flow" | "pulse" | "static" | "swing" | "surge";
 type NeonGlyph = "light" | "heavy" | "double";
 type EditorFactory = NonNullable<ReturnType<ExtensionContext["ui"]["getEditorComponent"]>>;
 
@@ -43,7 +43,7 @@ interface NeonConfig {
 const CONFIG_PATH = path.join(os.homedir(), ".pi", "agent", "neon-editor.json");
 const SGR_RE = /\x1b\[[0-9;]*m/g;
 const NEON_FACTORY = Symbol.for("neon-editor.factory");
-const MODES: NeonMode[] = ["flow", "pulse", "static", "swing"];
+const MODES: NeonMode[] = ["flow", "pulse", "static", "swing", "surge"];
 const GLYPHS: Record<NeonGlyph, string> = { light: "─", heavy: "━", double: "═" };
 
 interface Preset {
@@ -288,10 +288,13 @@ function colorAt(index: number, width: number, frame: number): Rgb {
 	let wave = (index / Math.max(1, width - 1)) * colors.length;
 	if (config.mode === "flow") {
 		wave += frame * 0.16;
-	} else if (config.mode === "swing") {
+	} else if (config.mode === "swing" || config.mode === "surge") {
 		// Gradient phase ping-pongs back and forth instead of cycling.
+		// surge matches the working comet's pace: 9 columns per frame,
+		// converted to gradient cycles so it scales with border width.
+		const step = config.mode === "surge" ? (9 * colors.length) / Math.max(1, width - 1) : 0.12;
 		const span = colors.length * 2;
-		const t = (frame * 0.12) % span;
+		const t = (frame * step) % span;
 		wave += t < colors.length ? t : span - t;
 	}
 
@@ -302,6 +305,8 @@ function colorAt(index: number, width: number, frame: number): Rgb {
 	let boost = 0;
 	if (config.mode === "pulse") {
 		boost = (0.5 + 0.5 * Math.sin(frame * 0.32)) * glowStrength * 0.85;
+	} else if (config.mode === "surge") {
+		// No accent highlight: the raw gradient oscillation is the effect.
 	} else {
 		const span = width + 28;
 		let center: number;
@@ -499,7 +504,7 @@ function applyEditor(ctx: ExtensionContext, enabled: boolean, notifyUser = true)
 
 function usage(ctx: ExtensionContext): void {
 	ctx.ui.notify(
-		"usage: /neon [on|off|status|preset <name>|mode <flow|pulse|static|swing>|speed <40-300>|glow <0-100>|thickness <1-4>|pad <0-3>|glyph <light|heavy|double>|fx <typing|send|done|working> <on|off>|keyword [word]|reset]",
+		"usage: /neon [on|off|status|preset <name>|mode <flow|pulse|static|swing|surge>|speed <40-300>|glow <0-100>|thickness <1-4>|pad <0-3>|glyph <light|heavy|double>|fx <typing|send|done|working> <on|off>|keyword [word]|reset]",
 		"warning",
 	);
 }
@@ -742,7 +747,7 @@ export default function neonEditor(pi: ExtensionAPI) {
 					return;
 				case "mode":
 					if (!MODES.includes(value as NeonMode)) {
-						ctx.ui.notify("usage: /neon mode <flow|pulse|static|swing>", "warning");
+						ctx.ui.notify("usage: /neon mode <flow|pulse|static|swing|surge>", "warning");
 						return;
 					}
 					config.mode = value as NeonMode;
