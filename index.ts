@@ -16,7 +16,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 type Rgb = [number, number, number];
-type NeonMode = "flow" | "pulse" | "static" | "swing" | "surge";
+type NeonMode = "flow" | "pulse" | "static" | "swing";
+type NeonWorkingStyle = "comet" | "surge";
 type NeonGlyph = "light" | "heavy" | "double";
 type EditorFactory = NonNullable<ReturnType<ExtensionContext["ui"]["getEditorComponent"]>>;
 
@@ -38,12 +39,14 @@ interface NeonConfig {
 	padY: number;
 	glyph: NeonGlyph;
 	fx: NeonFx;
+	workingStyle: NeonWorkingStyle;
 }
 
 const CONFIG_PATH = path.join(os.homedir(), ".pi", "agent", "neon-editor.json");
 const SGR_RE = /\x1b\[[0-9;]*m/g;
 const NEON_FACTORY = Symbol.for("neon-editor.factory");
-const MODES: NeonMode[] = ["flow", "pulse", "static", "swing", "surge"];
+const MODES: NeonMode[] = ["flow", "pulse", "static", "swing"];
+const WORKING_STYLES: NeonWorkingStyle[] = ["comet", "surge"];
 const GLYPHS: Record<NeonGlyph, string> = { light: "─", heavy: "━", double: "═" };
 
 interface Preset {
@@ -131,6 +134,7 @@ const DEFAULT_CONFIG: NeonConfig = {
 	padY: 0,
 	glyph: "light",
 	fx: { typing: true, send: true, done: true, working: true },
+	workingStyle: "comet",
 };
 
 function freshDefaults(): NeonConfig {
@@ -161,6 +165,9 @@ function normalizeConfig(input: unknown): NeonConfig {
 		thickness: clampNumber(raw.thickness, 1, 4, DEFAULT_CONFIG.thickness),
 		padY: clampNumber(raw.padY, 0, 3, DEFAULT_CONFIG.padY),
 		glyph: typeof raw.glyph === "string" && raw.glyph in GLYPHS ? (raw.glyph as NeonGlyph) : DEFAULT_CONFIG.glyph,
+		workingStyle: WORKING_STYLES.includes(raw.workingStyle as NeonWorkingStyle)
+			? (raw.workingStyle as NeonWorkingStyle)
+			: DEFAULT_CONFIG.workingStyle,
 		fx: {
 			typing: typeof raw.fx?.typing === "boolean" ? raw.fx.typing : DEFAULT_CONFIG.fx.typing,
 			send: typeof raw.fx?.send === "boolean" ? raw.fx.send : DEFAULT_CONFIG.fx.send,
@@ -264,7 +271,9 @@ function reactiveBoost(index: number, width: number, frame: number): number {
 
 	// Working bounce: while the agent is generating, a bright comet with a
 	// fading trail ping-pongs fast between the two ends of the border.
-	if (config.fx.working && state.working) {
+	// ("surge" style has no accent highlight; it oscillates the gradient
+	// inside colorAt instead.)
+	if (config.fx.working && state.working && config.workingStyle === "comet") {
 		const span = width + 28;
 		const t = (frame * 9) % (span * 2);
 		const forward = t < span;
@@ -285,16 +294,21 @@ function reactiveBoost(index: number, width: number, frame: number): number {
 function colorAt(index: number, width: number, frame: number): Rgb {
 	const colors = palette();
 	const glowStrength = config.glow / 100;
+	const workingSurge = config.fx.working && state.working && config.workingStyle === "surge";
 	let wave = (index / Math.max(1, width - 1)) * colors.length;
-	if (config.mode === "flow") {
-		wave += frame * 0.16;
-	} else if (config.mode === "swing" || config.mode === "surge") {
-		// Gradient phase ping-pongs back and forth instead of cycling.
-		// surge matches the working comet's pace: 9 columns per frame,
-		// converted to gradient cycles so it scales with border width.
-		const step = config.mode === "surge" ? (9 * colors.length) / Math.max(1, width - 1) : 0.12;
+	if (workingSurge) {
+		// Working "surge" style: the raw gradient sloshes left-right at the
+		// comet's pace (9 columns/frame, converted to gradient cycles).
+		const step = (9 * colors.length) / Math.max(1, width - 1);
 		const span = colors.length * 2;
 		const t = (frame * step) % span;
+		wave += t < colors.length ? t : span - t;
+	} else if (config.mode === "flow") {
+		wave += frame * 0.16;
+	} else if (config.mode === "swing") {
+		// Gradient phase ping-pongs back and forth instead of cycling.
+		const span = colors.length * 2;
+		const t = (frame * 0.12) % span;
 		wave += t < colors.length ? t : span - t;
 	}
 
@@ -305,8 +319,6 @@ function colorAt(index: number, width: number, frame: number): Rgb {
 	let boost = 0;
 	if (config.mode === "pulse") {
 		boost = (0.5 + 0.5 * Math.sin(frame * 0.32)) * glowStrength * 0.85;
-	} else if (config.mode === "surge") {
-		// No accent highlight: the raw gradient oscillation is the effect.
 	} else {
 		const span = width + 28;
 		let center: number;
@@ -504,7 +516,7 @@ function applyEditor(ctx: ExtensionContext, enabled: boolean, notifyUser = true)
 
 function usage(ctx: ExtensionContext): void {
 	ctx.ui.notify(
-		"usage: /neon [on|off|status|preset <name>|mode <flow|pulse|static|swing|surge>|speed <40-300>|glow <0-100>|thickness <1-4>|pad <0-3>|glyph <light|heavy|double>|fx <typing|send|done|working> <on|off>|keyword [word]|reset]",
+		"usage: /neon [on|off|status|preset <name>|mode <flow|pulse|static|swing>|working <comet|surge>|speed <40-300>|glow <0-100>|thickness <1-4>|pad <0-3>|glyph <light|heavy|double>|fx <typing|send|done|working> <on|off>|keyword [word]|reset]",
 		"warning",
 	);
 }
@@ -520,7 +532,7 @@ function fxLabel(): string {
 
 function notifyStatus(ctx: ExtensionContext): void {
 	ctx.ui.notify(
-		`neon: ${config.enabled ? "on" : "off"} · preset ${config.preset} · mode ${config.mode} · speed ${config.intervalMs}ms · glow ${config.glow} · thickness ${config.thickness} · pad ${config.padY} · glyph ${config.glyph} · fx ${fxLabel()} · keyword ${config.keyword || "-"}`,
+		`neon: ${config.enabled ? "on" : "off"} · preset ${config.preset} · mode ${config.mode} · speed ${config.intervalMs}ms · glow ${config.glow} · thickness ${config.thickness} · pad ${config.padY} · glyph ${config.glyph} · fx ${fxLabel()} · working-style ${config.workingStyle} · keyword ${config.keyword || "-"}`,
 		"info",
 	);
 }
@@ -558,6 +570,7 @@ async function neonMenu(ctx: ExtensionContext): Promise<void> {
 			["glyph", `Glyph — ${config.glyph}`],
 			["keyword", `Keyword — ${config.keyword || "-"}`],
 			["fx", `Effects — ${fxLabel()}`],
+			["workingStyle", `Working style — ${config.workingStyle}`],
 			["reset", "Reset to defaults"],
 		];
 		const labels = entries.map(([, label]) => label);
@@ -660,7 +673,15 @@ async function neonMenu(ctx: ExtensionContext): Promise<void> {
 				applyEditor(ctx, true, false);
 				ctx.ui.notify("neon-editor reset to defaults", "info");
 				break;
-		}
+			case "workingStyle": {
+				const next = await ctx.ui.select(`Working style (current: ${config.workingStyle})`, WORKING_STYLES);
+				if (next) {
+					config.workingStyle = next as NeonWorkingStyle;
+					saveConfig();
+					requestRender();
+				}
+				break;
+			}
 	}
 }
 
@@ -713,7 +734,7 @@ export default function neonEditor(pi: ExtensionAPI) {
 	pi.registerCommand("neon", {
 		description: "Control the neon-editor input border animation",
 		getArgumentCompletions: (prefix) => {
-			const words = ["on", "off", "status", "preset", "mode", "speed", "glow", "keyword", "thickness", "pad", "glyph", "fx", "reset"];
+			const words = ["on", "off", "status", "preset", "mode", "working", "speed", "glow", "keyword", "thickness", "pad", "glyph", "fx", "reset"];
 			const filtered = words.filter((word) => word.startsWith(prefix));
 			return filtered.length > 0 ? filtered.map((word) => ({ value: word, label: word })) : null;
 		},
@@ -747,7 +768,7 @@ export default function neonEditor(pi: ExtensionAPI) {
 					return;
 				case "mode":
 					if (!MODES.includes(value as NeonMode)) {
-						ctx.ui.notify("usage: /neon mode <flow|pulse|static|swing|surge>", "warning");
+						ctx.ui.notify("usage: /neon mode <flow|pulse|static|swing>", "warning");
 						return;
 					}
 					config.mode = value as NeonMode;
@@ -796,6 +817,16 @@ export default function neonEditor(pi: ExtensionAPI) {
 					ctx.ui.notify(`neon fx ${name}: ${toggle}`, "info");
 					return;
 				}
+				case "working":
+					if (!WORKING_STYLES.includes(value as NeonWorkingStyle)) {
+						ctx.ui.notify("usage: /neon working <comet|surge>", "warning");
+						return;
+					}
+					config.workingStyle = value as NeonWorkingStyle;
+					saveConfig();
+					requestRender();
+					ctx.ui.notify(`neon working style: ${value}`, "info");
+					return;
 				case "thickness": {
 					const n = Number(value);
 					if (!Number.isFinite(n)) {
