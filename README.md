@@ -39,6 +39,7 @@ Manual (development): clone or copy this repository into pi's global extension d
 - Adjustable border size: thickness (1-4 rows), inner padding, six line glyphs
 - Full frame mode: gradient side borders with rounded corners (`/neon frame on`)
 - End caps ornaments for the horizontal borders (`/neon caps block|diamond|angle`)
+- Custom background panel: preset tint, solid color, or a dark flowing gradient
 - Optional keyword glow, e.g. make `ultrathink` shine while typing
 - Reactive effects linked to your workflow: typing ripples, send flash, done pulse
 - Persistent user config at `~/.pi/agent/neon-editor.json`
@@ -70,6 +71,8 @@ Then control it with:
 /neon frame on           Full frame: gradient side borders + rounded corners
 /neon margin 3           Frame inner margin (columns), range 1-4
 /neon caps block         End caps on the horizontal borders: none | block | diamond | angle
+/neon bg gradient        Background: none | tint | solid | gradient
+/neon bgboost 20         Background brightness, range 5-60 (tint/gradient)
 /neon fx send off        Toggle a reactive effect: typing | send | done | working
 /neon keyword ultrathink Highlight a keyword while typing
 /neon keyword            Clear keyword highlight
@@ -145,6 +148,22 @@ the frame is **off** (frame corners take precedence when it is on):
 - `diamond` — `◆…◆` on both
 - `angle` — `⟨…⟩` on both
 - `none` — plain ends (default)
+
+## Background
+
+`/neon bg <mode>` paints a background panel inside the box (borders included;
+the autocomplete dropdown is left alone):
+
+- `none` — default terminal background
+- `tint` — a dark tint of the current preset's accent color
+- `gradient` — a dark copy of the border gradient flowing across the box;
+  typing ripples and send/done flashes shimmer through the backdrop
+- `solid` — a fixed custom color from `"bgColor": [r, g, b]` in the config
+  file (falls back to `tint` when unset)
+
+`/neon bgboost <5-60>` scales the brightness of `tint`/`gradient` (default 15%).
+The painter preserves the editor's own styling: cursor and selection keep
+their inverse/highlight rendering on top of the background.
 
 ## Custom presets
 
@@ -278,6 +297,9 @@ Example:
   "frame": false,
   "caps": "none",
   "margin": 2,
+  "bg": "none",
+  "bgColor": null,
+  "bgStrength": 15,
   "fx": { "typing": true, "send": true, "done": true, "working": true },
   "workingStyle": "comet",
   "presets": {}

@@ -20,6 +20,7 @@ type NeonMode = "flow" | "pulse" | "static" | "swing";
 type NeonWorkingStyle = "comet" | "surge";
 type NeonGlyph = "light" | "heavy" | "double" | "dashed" | "dotted" | "mixed";
 type NeonCaps = "none" | "block" | "diamond" | "angle";
+type NeonBg = "none" | "tint" | "solid" | "gradient";
 type EditorFactory = NonNullable<ReturnType<ExtensionContext["ui"]["getEditorComponent"]>>;
 
 interface NeonFx {
@@ -42,6 +43,9 @@ interface NeonConfig {
 	frame: boolean;
 	caps: NeonCaps;
 	margin: number;
+	bg: NeonBg;
+	bgColor: Rgb | null;
+	bgStrength: number;
 	fx: NeonFx;
 	workingStyle: NeonWorkingStyle;
 	/** User-defined presets from the config file; merged over the built-ins. */
@@ -74,6 +78,7 @@ const GLYPHS: Record<NeonGlyph, GlyphSet> = {
 };
 
 const CAPS: NeonCaps[] = ["none", "block", "diamond", "angle"];
+const BG_MODES: NeonBg[] = ["none", "tint", "solid", "gradient"];
 
 function capChar(caps: NeonCaps, edge: "top" | "bottom", side: "left" | "right"): string {
 	switch (caps) {
@@ -175,6 +180,9 @@ const DEFAULT_CONFIG: NeonConfig = {
 	frame: false,
 	caps: "none",
 	margin: 2,
+	bg: "none",
+	bgColor: null,
+	bgStrength: 15,
 	fx: { typing: true, send: true, done: true, working: true },
 	workingStyle: "comet",
 	presets: {},
@@ -248,6 +256,12 @@ function normalizeConfig(input: unknown): NeonConfig {
 		frame: typeof raw.frame === "boolean" ? raw.frame : DEFAULT_CONFIG.frame,
 		caps: typeof raw.caps === "string" && CAPS.includes(raw.caps as NeonCaps) ? (raw.caps as NeonCaps) : DEFAULT_CONFIG.caps,
 		margin: clamp(Math.round(Number(raw.margin) || DEFAULT_CONFIG.margin), 1, 4),
+		bg: typeof raw.bg === "string" && BG_MODES.includes(raw.bg as NeonBg) ? (raw.bg as NeonBg) : DEFAULT_CONFIG.bg,
+		bgColor:
+			Array.isArray(raw.bgColor) && raw.bgColor.length === 3 && raw.bgColor.every((v: unknown) => Number.isFinite(v))
+				? (raw.bgColor.map((v: unknown) => clamp(Math.round(Number(v)), 0, 255)) as Rgb)
+				: DEFAULT_CONFIG.bgColor,
+		bgStrength: clamp(Math.round(Number(raw.bgStrength) || DEFAULT_CONFIG.bgStrength), 5, 60),
 		workingStyle: WORKING_STYLES.includes(raw.workingStyle as NeonWorkingStyle)
 			? (raw.workingStyle as NeonWorkingStyle)
 			: DEFAULT_CONFIG.workingStyle,
@@ -478,6 +492,59 @@ function wrapSides(line: string, width: number, row: number): string {
 	return tokens.join("");
 }
 
+function bgCode(rgb: Rgb): string {
+	return `\x1b[48;2;${rgb[0]};${rgb[1]};${rgb[2]}m`;
+}
+
+const BG_RESET = "\x1b[49m";
+
+/**
+ * Paint a background behind one rendered line, preserving inner SGR styling.
+ * Every visible char gets a bg prefix (so mid-line resets can't kill it),
+ * except regions the editor styled with its own bg/inverse (cursor, selection).
+ */
+function applyBackground(line: string, width: number): string {
+	if (config.bg === "none") return line;
+	const s = config.bgStrength / 100;
+	const solid = config.bg === "solid" && config.bgColor ? config.bgColor : null;
+	const tint = config.bg === "tint" || (config.bg === "solid" && !solid) ? mix([0, 0, 0], accent(), s) : null;
+	const bgFor = (col: number): string => {
+		if (solid) return bgCode(solid);
+		if (tint) return bgCode(tint);
+		// Gradient: a dark, slowly flowing copy of the border gradient. It uses
+		// colorAt, so ripples/flashes shimmer through the backdrop too.
+		return bgCode(mix([0, 0, 0], colorAt(col, width, state.frame), s));
+	};
+
+	const tokens = line.match(/\x1b\[[0-9;]*m|./gsu) ?? [];
+	let out = "";
+	let col = 0;
+	let innerBg = false;
+	for (const tok of tokens) {
+		if (tok.startsWith("\x1b[")) {
+			// Parse SGR codes properly (38/48 consume their color arguments) so a
+			// color component like "48" inside an fg sequence isn't misread as a bg.
+			const parts = tok.slice(2, -1).split(";");
+			for (let i = 0; i < parts.length; i++) {
+				const n = Number(parts[i]);
+				if (n === 38 || n === 48) {
+					if (n === 48) innerBg = true;
+					const mode = Number(parts[i + 1]);
+					i += mode === 2 ? 4 : mode === 5 ? 2 : 0;
+					continue;
+				}
+				if (n === 0 || n === 27 || n === 49) innerBg = false;
+				else if (n === 7) innerBg = true;
+			}
+			out += tok;
+			continue;
+		}
+		out += innerBg ? tok : bgFor(col) + tok;
+		col++;
+	}
+	return `${out}${BG_RESET}`;
+}
+
 /** Blank pad row that keeps the frame's sides continuous. */
 function sidePadLine(width: number, row: number): string {
 	const { left, right } = sideDecor(width, row);
@@ -576,7 +643,10 @@ class NeonEditor extends CustomEditor {
 		const topIsBorder = Boolean(borderFlags[0]);
 		const bottomIsBorder = lastBorderIndex > 0;
 		let sideRow = 0;
-		const padLines = () => Array.from({ length: config.padY }, () => (config.frame ? sidePadLine(width, sideRow++) : ""));
+		const padLines = () =>
+			Array.from({ length: config.padY }, () =>
+				config.frame ? sidePadLine(width, sideRow++) : config.bg !== "none" ? " ".repeat(width) : "",
+			);
 		const borderRows = (plain: string, edge: "top" | "bottom") =>
 			Array.from({ length: config.thickness }, () => renderBorder(plain, width, edge));
 
@@ -600,6 +670,16 @@ class NeonEditor extends CustomEditor {
 				sideRow++;
 			}
 			out.push(line);
+		}
+
+		// Background panel: paint every line inside the box; leave the
+		// autocomplete dropdown below the bottom border untouched.
+		if (config.bg !== "none") {
+			const autoLines = bottomIsBorder ? lines.length - 1 - lastBorderIndex : 0;
+			const boxLines = out.length - Math.max(0, autoLines);
+			for (let i = 0; i < boxLines; i++) {
+				out[i] = applyBackground(out[i]!, width);
+			}
 		}
 
 		return out;
@@ -663,7 +743,7 @@ function applyEditor(ctx: ExtensionContext, enabled: boolean, notifyUser = true)
 
 function usage(ctx: ExtensionContext): void {
 	ctx.ui.notify(
-		"usage: /neon [on|off|status|preset <name>|mode <flow|pulse|static|swing>|working <comet|surge>|speed <40-300>|glow <0-100>|thickness <1-4>|pad <0-3>|glyph <light|heavy|double|dashed|dotted|mixed>|frame <on|off>|margin <1-4>|caps <none|block|diamond|angle>|fx <typing|send|done|working> <on|off>|keyword [word]|reset]",
+		"usage: /neon [on|off|status|preset <name>|mode <flow|pulse|static|swing>|working <comet|surge>|speed <40-300>|glow <0-100>|thickness <1-4>|pad <0-3>|glyph <light|heavy|double|dashed|dotted|mixed>|frame <on|off>|margin <1-4>|caps <none|block|diamond|angle>|bg <none|tint|solid|gradient>|bgboost <5-60>|fx <typing|send|done|working> <on|off>|keyword [word]|reset]",
 		"warning",
 	);
 }
@@ -679,7 +759,7 @@ function fxLabel(): string {
 
 function notifyStatus(ctx: ExtensionContext): void {
 	ctx.ui.notify(
-		`neon: ${config.enabled ? "on" : "off"} · preset ${config.preset} · mode ${config.mode} · speed ${config.intervalMs}ms · glow ${config.glow} · thickness ${config.thickness} · pad ${config.padY} · glyph ${config.glyph} · frame ${config.frame ? `on/${config.margin}` : "off"} · caps ${config.caps} · fx ${fxLabel()} · working-style ${config.workingStyle} · keyword ${config.keyword || "-"}`,
+		`neon: ${config.enabled ? "on" : "off"} · preset ${config.preset} · mode ${config.mode} · speed ${config.intervalMs}ms · glow ${config.glow} · thickness ${config.thickness} · pad ${config.padY} · glyph ${config.glyph} · frame ${config.frame ? `on/${config.margin}` : "off"} · caps ${config.caps} · bg ${config.bg} · fx ${fxLabel()} · working-style ${config.workingStyle} · keyword ${config.keyword || "-"}`,
 		"info",
 	);
 }
@@ -718,6 +798,8 @@ async function neonMenu(ctx: ExtensionContext): Promise<void> {
 			["frame", `Frame (sides+corners) — ${config.frame ? "on" : "off"}`],
 			["margin", `Frame margin — ${config.margin}`],
 			["caps", `End caps — ${config.caps}`],
+			["bg", `Background — ${config.bg}${config.bg === "none" ? "" : ` (${config.bgStrength}%)`}`],
+			["bgboost", `Background strength — ${config.bgStrength}%`],
 			["keyword", `Keyword — ${config.keyword || "-"}`],
 			["fx", `Effects — ${fxLabel()}`],
 			["workingStyle", `Working style — ${config.workingStyle}`],
@@ -808,6 +890,29 @@ async function neonMenu(ctx: ExtensionContext): Promise<void> {
 					config.caps = next as NeonCaps;
 					saveConfig();
 					requestRender();
+				}
+				break;
+			}
+			case "bg": {
+				const next = await ctx.ui.select(`Background (current: ${config.bg})`, BG_MODES);
+				if (next) {
+					config.bg = next as NeonBg;
+					saveConfig();
+					requestRender();
+				}
+				break;
+			}
+			case "bgboost": {
+				const next = await ctx.ui.input("Background strength % (5-60)", String(config.bgStrength));
+				if (next) {
+					const boost = Number(next.trim());
+					if (Number.isInteger(boost) && boost >= 5 && boost <= 60) {
+						config.bgStrength = boost;
+						saveConfig();
+						requestRender();
+					} else {
+						ctx.ui.notify("background strength must be an integer 5-60", "warning");
+					}
 				}
 				break;
 			}
@@ -908,7 +1013,7 @@ export default function neonEditor(pi: ExtensionAPI) {
 	pi.registerCommand("neon", {
 		description: "Control the neon-editor input border animation",
 		getArgumentCompletions: (prefix) => {
-			const words = ["on", "off", "status", "preset", "mode", "working", "speed", "glow", "keyword", "thickness", "pad", "glyph", "frame", "margin", "caps", "fx", "reset"];
+			const words = ["on", "off", "status", "preset", "mode", "working", "speed", "glow", "keyword", "thickness", "pad", "glyph", "frame", "margin", "caps", "bg", "bgboost", "fx", "reset"];
 			const filtered = words.filter((word) => word.startsWith(prefix));
 			return filtered.length > 0 ? filtered.map((word) => ({ value: word, label: word })) : null;
 		},
@@ -1012,6 +1117,28 @@ export default function neonEditor(pi: ExtensionAPI) {
 					requestRender();
 					ctx.ui.notify(`neon caps: ${value}`, "info");
 					return;
+				case "bg":
+					if (!BG_MODES.includes(value as NeonBg)) {
+						ctx.ui.notify(`usage: /neon bg <${BG_MODES.join("|")}>`, "warning");
+						return;
+					}
+					config.bg = value as NeonBg;
+					saveConfig();
+					requestRender();
+					ctx.ui.notify(`neon background: ${value}`, "info");
+					return;
+				case "bgboost": {
+					const boost = Number(value);
+					if (!Number.isInteger(boost) || boost < 5 || boost > 60) {
+						ctx.ui.notify("usage: /neon bgboost <5-60>", "warning");
+						return;
+					}
+					config.bgStrength = boost;
+					saveConfig();
+					requestRender();
+					ctx.ui.notify(`neon background strength: ${boost}`, "info");
+					return;
+				}
 				case "fx": {
 					const [name, toggle] = value.split(/\s+/).filter(Boolean);
 					if (!name || !(name in config.fx) || (toggle !== "on" && toggle !== "off")) {
