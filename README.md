@@ -8,7 +8,7 @@ This package replaces the default editor component with a `CustomEditor` subclas
 
 - Flowing rainbow border with a moving glow highlight
 - Border presets: `neon`, `ocean`, `sunset`, `matrix`, `ember`, `violet`
-- Render modes: `flow`, `pulse`, `static`
+- Render modes: `flow`, `pulse`, `static`, `swing`
 - Adjustable animation speed and glow strength
 - Adjustable border size: thickness (1-4 rows), inner padding, line glyph weight
 - Optional keyword glow, e.g. make `ultrathink` shine while typing
@@ -38,7 +38,7 @@ Then control it with:
 /neon on                 Enable neon editor
 /neon off                Disable and restore the previous editor
 /neon preset ocean       Switch palette preset
-/neon mode pulse         Switch render mode: flow | pulse | static
+/neon mode pulse         Switch render mode: flow | pulse | static | swing
 /neon speed 120          Set frame interval in ms, range 40-300
 /neon glow 70            Set glow strength, range 0-100
 /neon thickness 2        Border height in rows, range 1-4
@@ -60,7 +60,7 @@ change it and Esc to close the menu:
 neon-editor · enter to edit, esc to close
   Turn off
   Preset — neon          → picker: neon / ocean / sunset / matrix / ember / violet
-  Mode — flow            → picker: flow / pulse / static
+  Mode — flow            → picker: flow / pulse / static / swing
   Speed — 70ms           → number input (40-300)
   Glow — 70              → number input (0-100)
   Thickness — 1          → picker: 1-4
@@ -75,6 +75,15 @@ Changes apply immediately and are persisted to the config file. All
 subcommands (`/neon preset ocean` etc.) remain available for scripting and
 quick edits; `/neon status` prints a one-line summary.
 
+## Render modes
+
+| Mode | Look |
+| --- | --- |
+| `flow` | The gradient streams along the border in one direction, with a glow highlight sweeping through. |
+| `pulse` | The gradient stays put while the whole border breathes in brightness. |
+| `static` | Frozen gradient with a fixed glow highlight at the center. No motion. |
+| `swing` | The glow highlight oscillates left-right between the two ends (triangle wave), and the gradient phase ping-pongs with it. |
+
 ## Reactive effects
 
 The border reacts to what is happening in the session. Each effect can be
@@ -88,7 +97,7 @@ the interactive menu (`Effects — ...` entry):
 | `done` | pi's `agent_end` event (the agent finishes generating) | The border pulses three times, decaying over ~36 frames — a subtle "I'm done" signal. |
 
 Effects only fire while neon-editor is enabled and rendering in TUI mode.
-They are layered on top of the current render mode (`flow`/`pulse`/`static`)
+They are layered on top of the current render mode (`flow`/`pulse`/`static`/`swing`)
 via `Math.max` blending, so they never fight the base animation.
 
 ## Border size

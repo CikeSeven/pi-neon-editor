@@ -16,7 +16,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 type Rgb = [number, number, number];
-type NeonMode = "flow" | "pulse" | "static";
+type NeonMode = "flow" | "pulse" | "static" | "swing";
 type NeonGlyph = "light" | "heavy" | "double";
 type EditorFactory = NonNullable<ReturnType<ExtensionContext["ui"]["getEditorComponent"]>>;
 
@@ -42,7 +42,7 @@ interface NeonConfig {
 const CONFIG_PATH = path.join(os.homedir(), ".pi", "agent", "neon-editor.json");
 const SGR_RE = /\x1b\[[0-9;]*m/g;
 const NEON_FACTORY = Symbol.for("neon-editor.factory");
-const MODES: NeonMode[] = ["flow", "pulse", "static"];
+const MODES: NeonMode[] = ["flow", "pulse", "static", "swing"];
 const GLYPHS: Record<NeonGlyph, string> = { light: "─", heavy: "━", double: "═" };
 
 const PRESETS: Record<string, Rgb[]> = {
@@ -241,7 +241,14 @@ function colorAt(index: number, width: number, frame: number): Rgb {
 	const colors = palette();
 	const glowStrength = config.glow / 100;
 	let wave = (index / Math.max(1, width - 1)) * colors.length;
-	if (config.mode === "flow") wave += frame * 0.16;
+	if (config.mode === "flow") {
+		wave += frame * 0.16;
+	} else if (config.mode === "swing") {
+		// Gradient phase ping-pongs back and forth instead of cycling.
+		const span = colors.length * 2;
+		const t = (frame * 0.12) % span;
+		wave += t < colors.length ? t : span - t;
+	}
 
 	const baseIndex = ((Math.floor(wave) % colors.length) + colors.length) % colors.length;
 	const nextIndex = (baseIndex + 1) % colors.length;
@@ -251,7 +258,17 @@ function colorAt(index: number, width: number, frame: number): Rgb {
 	if (config.mode === "pulse") {
 		boost = (0.5 + 0.5 * Math.sin(frame * 0.32)) * glowStrength * 0.85;
 	} else {
-		const center = config.mode === "static" ? width / 2 : ((frame * 1.8) % (width + 28)) - 14;
+		const span = width + 28;
+		let center: number;
+		if (config.mode === "static") {
+			center = width / 2;
+		} else if (config.mode === "swing") {
+			// Triangle wave: the glow highlight bounces between the two ends.
+			const t = (frame * 1.8) % (span * 2);
+			center = (t < span ? t : span * 2 - t) - 14;
+		} else {
+			center = ((frame * 1.8) % span) - 14;
+		}
 		const radius = 4 + glowStrength * 14;
 		boost = Math.max(0, 1 - Math.abs(index - center) / radius) * glowStrength * 0.8;
 	}
@@ -437,7 +454,7 @@ function applyEditor(ctx: ExtensionContext, enabled: boolean, notifyUser = true)
 
 function usage(ctx: ExtensionContext): void {
 	ctx.ui.notify(
-		"usage: /neon [on|off|status|preset <name>|mode <flow|pulse|static>|speed <40-300>|glow <0-100>|thickness <1-4>|pad <0-3>|glyph <light|heavy|double>|fx <typing|send|done> <on|off>|keyword [word]|reset]",
+		"usage: /neon [on|off|status|preset <name>|mode <flow|pulse|static|swing>|speed <40-300>|glow <0-100>|thickness <1-4>|pad <0-3>|glyph <light|heavy|double>|fx <typing|send|done> <on|off>|keyword [word]|reset]",
 		"warning",
 	);
 }
@@ -671,7 +688,7 @@ export default function neonEditor(pi: ExtensionAPI) {
 					return;
 				case "mode":
 					if (!MODES.includes(value as NeonMode)) {
-						ctx.ui.notify("usage: /neon mode <flow|pulse|static>", "warning");
+						ctx.ui.notify("usage: /neon mode <flow|pulse|static|swing>", "warning");
 						return;
 					}
 					config.mode = value as NeonMode;
