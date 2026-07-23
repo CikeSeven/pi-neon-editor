@@ -24,6 +24,7 @@ interface NeonFx {
 	typing: boolean;
 	send: boolean;
 	done: boolean;
+	working: boolean;
 }
 
 interface NeonConfig {
@@ -104,7 +105,7 @@ const DEFAULT_CONFIG: NeonConfig = {
 	thickness: 1,
 	padY: 0,
 	glyph: "light",
-	fx: { typing: true, send: true, done: true },
+	fx: { typing: true, send: true, done: true, working: true },
 };
 
 function freshDefaults(): NeonConfig {
@@ -139,6 +140,7 @@ function normalizeConfig(input: unknown): NeonConfig {
 			typing: typeof raw.fx?.typing === "boolean" ? raw.fx.typing : DEFAULT_CONFIG.fx.typing,
 			send: typeof raw.fx?.send === "boolean" ? raw.fx.send : DEFAULT_CONFIG.fx.send,
 			done: typeof raw.fx?.done === "boolean" ? raw.fx.done : DEFAULT_CONFIG.fx.done,
+			working: typeof raw.fx?.working === "boolean" ? raw.fx.working : DEFAULT_CONFIG.fx.working,
 		},
 	};
 }
@@ -171,6 +173,7 @@ const state = {
 	ripples: [] as Array<{ col: number; frame: number }>,
 	sendFlash: -1,
 	donePulse: -1,
+	working: false,
 };
 
 function stripSgr(value: string): string {
@@ -208,7 +211,7 @@ function isBorderLine(plain: string, width: number): boolean {
 	return visibleWidth(plain) === width && /─{3,}/.test(plain) && /^[─\s↑↓0-9more]+$/.test(plain);
 }
 
-function reactiveBoost(index: number, frame: number): number {
+function reactiveBoost(index: number, width: number, frame: number): number {
 	let boost = 0;
 
 	// Typing ripples: a bright core at the cursor column, then an expanding
@@ -237,6 +240,16 @@ function reactiveBoost(index: number, frame: number): number {
 	if (config.fx.done && state.donePulse >= 0) {
 		const age = frame - state.donePulse;
 		if (age >= 0 && age < 36) boost = Math.max(boost, Math.abs(Math.sin(age * 0.5)) * (1 - age / 36) * 0.85);
+	}
+
+	// Working bounce: while the agent is generating, a tight bright highlight
+	// ping-pongs fast between the two ends of the border.
+	if (config.fx.working && state.working) {
+		const span = width + 28;
+		const t = (frame * 6) % (span * 2);
+		const center = (t < span ? t : span * 2 - t) - 14;
+		const radius = 3 + (config.glow / 100) * 6;
+		boost = Math.max(boost, Math.max(0, 1 - Math.abs(index - center) / radius) * 0.95);
 	}
 
 	return boost;
@@ -277,7 +290,7 @@ function colorAt(index: number, width: number, frame: number): Rgb {
 		const radius = 4 + glowStrength * 14;
 		boost = Math.max(0, 1 - Math.abs(index - center) / radius) * glowStrength * 0.8;
 	}
-	boost = Math.max(boost, reactiveBoost(index, frame));
+	boost = Math.max(boost, reactiveBoost(index, width, frame));
 
 	return brighten(color, boost);
 }
@@ -459,7 +472,7 @@ function applyEditor(ctx: ExtensionContext, enabled: boolean, notifyUser = true)
 
 function usage(ctx: ExtensionContext): void {
 	ctx.ui.notify(
-		"usage: /neon [on|off|status|preset <name>|mode <flow|pulse|static|swing>|speed <40-300>|glow <0-100>|thickness <1-4>|pad <0-3>|glyph <light|heavy|double>|fx <typing|send|done> <on|off>|keyword [word]|reset]",
+		"usage: /neon [on|off|status|preset <name>|mode <flow|pulse|static|swing>|speed <40-300>|glow <0-100>|thickness <1-4>|pad <0-3>|glyph <light|heavy|double>|fx <typing|send|done|working> <on|off>|keyword [word]|reset]",
 		"warning",
 	);
 }
@@ -469,6 +482,7 @@ function fxLabel(): string {
 	if (config.fx.typing) parts.push("typing");
 	if (config.fx.send) parts.push("send");
 	if (config.fx.done) parts.push("done");
+	if (config.fx.working) parts.push("working");
 	return parts.length > 0 ? parts.join("+") : "off";
 }
 
@@ -593,6 +607,7 @@ async function neonMenu(ctx: ExtensionContext): Promise<void> {
 					["typing", `${config.fx.typing ? "✓" : "✗"} typing ripple`],
 					["send", `${config.fx.send ? "✓" : "✗"} send flash`],
 					["done", `${config.fx.done ? "✓" : "✗"} done pulse`],
+					["working", `${config.fx.working ? "✓" : "✗"} working bounce`],
 				];
 				const next = await ctx.ui.select(
 					"Toggle reactive effect",
@@ -625,6 +640,7 @@ export default function neonEditor(pi: ExtensionAPI) {
 		state.ripples = [];
 		state.sendFlash = -1;
 		state.donePulse = -1;
+		state.working = false;
 		config = loadConfig();
 
 		if (ctx.mode === "tui" && config.enabled) {
@@ -640,6 +656,7 @@ export default function neonEditor(pi: ExtensionAPI) {
 		state.ripples = [];
 		state.sendFlash = -1;
 		state.donePulse = -1;
+		state.working = false;
 	});
 
 	// Reactive effects: flash the border when the user submits input,
@@ -650,7 +667,12 @@ export default function neonEditor(pi: ExtensionAPI) {
 		}
 	});
 
+	pi.on("agent_start", () => {
+		state.working = true;
+	});
+
 	pi.on("agent_end", () => {
+		state.working = false;
 		if (config.enabled && config.fx.done && state.tui) {
 			state.donePulse = state.frame;
 		}
@@ -734,7 +756,7 @@ export default function neonEditor(pi: ExtensionAPI) {
 				case "fx": {
 					const [name, toggle] = value.split(/\s+/).filter(Boolean);
 					if (!name || !(name in config.fx) || (toggle !== "on" && toggle !== "off")) {
-						ctx.ui.notify("usage: /neon fx <typing|send|done> <on|off>", "warning");
+						ctx.ui.notify("usage: /neon fx <typing|send|done|working> <on|off>", "warning");
 						return;
 					}
 					config.fx[name as keyof NeonFx] = toggle === "on";
