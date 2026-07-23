@@ -54,6 +54,21 @@ interface NeonConfig {
 
 const CONFIG_PATH = path.join(os.homedir(), ".pi", "agent", "neon-editor.json");
 const SGR_RE = /\x1b\[[0-9;]*m/g;
+
+/**
+ * Matches ANY ANSI escape sequence (CSI with any final byte, OSC, APC) or one
+ * visible code point. Tokenizing with this keeps non-SGR sequences (hyperlinks,
+ * APC markers) atomic, so we never splice styling codes into their middle.
+ */
+const ANSI_TOKEN_RE = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b_[^\x07\x1b]*(?:\x07|\x1b\\)|./gsu;
+
+function tokenizeLine(line: string): string[] {
+	return line.match(ANSI_TOKEN_RE) ?? [];
+}
+
+function isEscapeToken(token: string): boolean {
+	return token.startsWith("\x1b");
+}
 const NEON_FACTORY = Symbol.for("neon-editor.factory");
 const MODES: NeonMode[] = ["flow", "pulse", "static", "swing"];
 const WORKING_STYLES: NeonWorkingStyle[] = ["comet", "surge"];
@@ -479,11 +494,11 @@ function sideDecor(width: number, row: number): { left: string; right: string } 
 
 /** Replace the first/last visible column of a full-width line with side glyphs. */
 function wrapSides(line: string, width: number, row: number): string {
-	if (visibleWidth(stripSgr(line)) !== width) return line;
-	const tokens = line.match(/\x1b\[[0-9;]*m|./gsu) ?? [];
+	if (visibleWidth(line) !== width) return line;
+	const tokens = tokenizeLine(line);
 	const visible: number[] = [];
 	for (let i = 0; i < tokens.length; i++) {
-		if (!tokens[i]!.startsWith("\x1b[")) visible.push(i);
+		if (!isEscapeToken(tokens[i]!)) visible.push(i);
 	}
 	if (visible.length < 2) return line;
 	const { left, right } = sideDecor(width, row);
@@ -516,25 +531,30 @@ function applyBackground(line: string, width: number): string {
 		return bgCode(mix([0, 0, 0], colorAt(col, width, state.frame), s));
 	};
 
-	const tokens = line.match(/\x1b\[[0-9;]*m|./gsu) ?? [];
+	const tokens = tokenizeLine(line);
 	let out = "";
 	let col = 0;
 	let innerBg = false;
 	for (const tok of tokens) {
-		if (tok.startsWith("\x1b[")) {
-			// Parse SGR codes properly (38/48 consume their color arguments) so a
-			// color component like "48" inside an fg sequence isn't misread as a bg.
-			const parts = tok.slice(2, -1).split(";");
-			for (let i = 0; i < parts.length; i++) {
-				const n = Number(parts[i]);
-				if (n === 38 || n === 48) {
-					if (n === 48) innerBg = true;
-					const mode = Number(parts[i + 1]);
-					i += mode === 2 ? 4 : mode === 5 ? 2 : 0;
-					continue;
+		if (isEscapeToken(tok)) {
+			// Only SGR (CSI ... m) affects the inner-bg state; OSC/APC pass through.
+			if (tok.startsWith("\x1b[") && tok.endsWith("m")) {
+				// Parse SGR codes properly (38/48 consume their color arguments) so a
+				// color component like "48" inside an fg sequence isn't misread as a bg.
+				const parts = tok.slice(2, -1).split(";");
+				for (let i = 0; i < parts.length; i++) {
+					const n = Number(parts[i]);
+					if (n === 38 || n === 48) {
+						if (n === 48) innerBg = true;
+						const mode = Number(parts[i + 1]);
+						i += mode === 2 ? 4 : mode === 5 ? 2 : 0;
+						continue;
+					}
+					if (n === 0 || n === 27 || n === 49) innerBg = false;
+					else if (n === 7) innerBg = true;
 				}
-				if (n === 0 || n === 27 || n === 49) innerBg = false;
-				else if (n === 7) innerBg = true;
+				out += tok;
+				continue;
 			}
 			out += tok;
 			continue;
@@ -557,16 +577,9 @@ function escapeRegExp(value: string): string {
 
 function mapPlainSegments(line: string, fn: (segment: string) => string): string {
 	let out = "";
-	let last = 0;
-	const re = new RegExp(SGR_RE.source, "g");
-
-	for (const match of line.matchAll(re)) {
-		out += fn(line.slice(last, match.index));
-		out += match[0];
-		last = match.index + match[0].length;
+	for (const token of tokenizeLine(line)) {
+		out += isEscapeToken(token) ? token : fn(token);
 	}
-
-	out += fn(line.slice(last));
 	return out;
 }
 
