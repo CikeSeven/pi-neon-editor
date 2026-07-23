@@ -41,6 +41,7 @@ interface NeonConfig {
 	glyph: NeonGlyph;
 	frame: boolean;
 	caps: NeonCaps;
+	margin: number;
 	fx: NeonFx;
 	workingStyle: NeonWorkingStyle;
 	/** User-defined presets from the config file; merged over the built-ins. */
@@ -173,6 +174,7 @@ const DEFAULT_CONFIG: NeonConfig = {
 	glyph: "light",
 	frame: false,
 	caps: "none",
+	margin: 2,
 	fx: { typing: true, send: true, done: true, working: true },
 	workingStyle: "comet",
 	presets: {},
@@ -245,6 +247,7 @@ function normalizeConfig(input: unknown): NeonConfig {
 		glyph: typeof raw.glyph === "string" && raw.glyph in GLYPHS ? (raw.glyph as NeonGlyph) : DEFAULT_CONFIG.glyph,
 		frame: typeof raw.frame === "boolean" ? raw.frame : DEFAULT_CONFIG.frame,
 		caps: typeof raw.caps === "string" && CAPS.includes(raw.caps as NeonCaps) ? (raw.caps as NeonCaps) : DEFAULT_CONFIG.caps,
+		margin: clamp(Math.round(Number(raw.margin) || DEFAULT_CONFIG.margin), 1, 4),
 		workingStyle: WORKING_STYLES.includes(raw.workingStyle as NeonWorkingStyle)
 			? (raw.workingStyle as NeonWorkingStyle)
 			: DEFAULT_CONFIG.workingStyle,
@@ -552,10 +555,11 @@ class NeonEditor extends CustomEditor {
 	override render(width: number): string[] {
 		// Frame mode needs a horizontal margin so text never touches the sides.
 		// Adjust BEFORE super.render so this frame's layout is already correct.
-		if (config.enabled && config.frame && this.getPaddingX() < 1) {
-			this.setPaddingX(1);
+		const wantPad = Math.max(1, config.margin);
+		if (config.enabled && config.frame && this.getPaddingX() !== wantPad) {
+			this.setPaddingX(wantPad);
 			this.autoPad = true;
-		} else if (this.autoPad && (!config.enabled || !config.frame) && this.getPaddingX() === 1) {
+		} else if (this.autoPad && (!config.enabled || !config.frame)) {
 			this.setPaddingX(0);
 			this.autoPad = false;
 		}
@@ -659,7 +663,7 @@ function applyEditor(ctx: ExtensionContext, enabled: boolean, notifyUser = true)
 
 function usage(ctx: ExtensionContext): void {
 	ctx.ui.notify(
-		"usage: /neon [on|off|status|preset <name>|mode <flow|pulse|static|swing>|working <comet|surge>|speed <40-300>|glow <0-100>|thickness <1-4>|pad <0-3>|glyph <light|heavy|double|dashed|dotted|mixed>|frame <on|off>|caps <none|block|diamond|angle>|fx <typing|send|done|working> <on|off>|keyword [word]|reset]",
+		"usage: /neon [on|off|status|preset <name>|mode <flow|pulse|static|swing>|working <comet|surge>|speed <40-300>|glow <0-100>|thickness <1-4>|pad <0-3>|glyph <light|heavy|double|dashed|dotted|mixed>|frame <on|off>|margin <1-4>|caps <none|block|diamond|angle>|fx <typing|send|done|working> <on|off>|keyword [word]|reset]",
 		"warning",
 	);
 }
@@ -675,7 +679,7 @@ function fxLabel(): string {
 
 function notifyStatus(ctx: ExtensionContext): void {
 	ctx.ui.notify(
-		`neon: ${config.enabled ? "on" : "off"} · preset ${config.preset} · mode ${config.mode} · speed ${config.intervalMs}ms · glow ${config.glow} · thickness ${config.thickness} · pad ${config.padY} · glyph ${config.glyph} · frame ${config.frame ? "on" : "off"} · caps ${config.caps} · fx ${fxLabel()} · working-style ${config.workingStyle} · keyword ${config.keyword || "-"}`,
+		`neon: ${config.enabled ? "on" : "off"} · preset ${config.preset} · mode ${config.mode} · speed ${config.intervalMs}ms · glow ${config.glow} · thickness ${config.thickness} · pad ${config.padY} · glyph ${config.glyph} · frame ${config.frame ? `on/${config.margin}` : "off"} · caps ${config.caps} · fx ${fxLabel()} · working-style ${config.workingStyle} · keyword ${config.keyword || "-"}`,
 		"info",
 	);
 }
@@ -712,6 +716,7 @@ async function neonMenu(ctx: ExtensionContext): Promise<void> {
 			["pad", `Pad — ${config.padY}`],
 			["glyph", `Glyph — ${config.glyph}`],
 			["frame", `Frame (sides+corners) — ${config.frame ? "on" : "off"}`],
+			["margin", `Frame margin — ${config.margin}`],
 			["caps", `End caps — ${config.caps}`],
 			["keyword", `Keyword — ${config.keyword || "-"}`],
 			["fx", `Effects — ${fxLabel()}`],
@@ -788,6 +793,15 @@ async function neonMenu(ctx: ExtensionContext): Promise<void> {
 				saveConfig();
 				requestRender();
 				break;
+			case "margin": {
+				const next = await ctx.ui.select(`Frame margin (current: ${config.margin})`, ["1", "2", "3", "4"]);
+				if (next) {
+					config.margin = Number(next);
+					saveConfig();
+					requestRender();
+				}
+				break;
+			}
 			case "caps": {
 				const next = await ctx.ui.select(`End caps (current: ${config.caps})`, CAPS);
 				if (next) {
@@ -894,7 +908,7 @@ export default function neonEditor(pi: ExtensionAPI) {
 	pi.registerCommand("neon", {
 		description: "Control the neon-editor input border animation",
 		getArgumentCompletions: (prefix) => {
-			const words = ["on", "off", "status", "preset", "mode", "working", "speed", "glow", "keyword", "thickness", "pad", "glyph", "frame", "caps", "fx", "reset"];
+			const words = ["on", "off", "status", "preset", "mode", "working", "speed", "glow", "keyword", "thickness", "pad", "glyph", "frame", "margin", "caps", "fx", "reset"];
 			const filtered = words.filter((word) => word.startsWith(prefix));
 			return filtered.length > 0 ? filtered.map((word) => ({ value: word, label: word })) : null;
 		},
@@ -976,6 +990,18 @@ export default function neonEditor(pi: ExtensionAPI) {
 					requestRender();
 					ctx.ui.notify(`neon frame: ${value}`, "info");
 					return;
+				case "margin": {
+					const margin = Number(value);
+					if (!Number.isInteger(margin) || margin < 1 || margin > 4) {
+						ctx.ui.notify("usage: /neon margin <1-4>", "warning");
+						return;
+					}
+					config.margin = margin;
+					saveConfig();
+					requestRender();
+					ctx.ui.notify(`neon margin: ${margin}`, "info");
+					return;
+				}
 				case "caps":
 					if (!CAPS.includes(value as NeonCaps)) {
 						ctx.ui.notify(`usage: /neon caps <${CAPS.join("|")}>`, "warning");

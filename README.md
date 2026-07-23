@@ -68,6 +68,7 @@ Then control it with:
 /neon pad 1              Blank lines between border and text, range 0-3
 /neon glyph heavy        Border line glyph: light | heavy | double | dashed | dotted | mixed
 /neon frame on           Full frame: gradient side borders + rounded corners
+/neon margin 3           Frame inner margin (columns), range 1-4
 /neon caps block         End caps on the horizontal borders: none | block | diamond | angle
 /neon fx send off        Toggle a reactive effect: typing | send | done | working
 /neon keyword ultrathink Highlight a keyword while typing
@@ -123,8 +124,9 @@ effect consistently. To tune a preset, edit `PRESETS` in `index.ts`.
 
 `/neon frame on` turns the box into a full rectangle: the top/bottom borders
 gain corners and every content row gets gradient side borders that flow with
-the animation (the editor auto-adds a one-column inner margin so text never
-touches the sides; the margin is removed again when the frame is turned off).
+the animation. `/neon margin <1-4>` (default 2) controls the inner horizontal
+padding so text keeps a comfortable distance from the sides; the padding is
+removed again when the frame is turned off.
 Corner/vertical glyphs follow the current line glyph:
 
 | Glyph | Horizontal | Vertical | Corners |
@@ -275,6 +277,7 @@ Example:
   "glyph": "light",
   "frame": false,
   "caps": "none",
+  "margin": 2,
   "fx": { "typing": true, "send": true, "done": true, "working": true },
   "workingStyle": "comet",
   "presets": {}
