@@ -682,6 +682,7 @@ async function neonMenu(ctx: ExtensionContext): Promise<void> {
 				}
 				break;
 			}
+		}
 	}
 }
 
