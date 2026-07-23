@@ -95,7 +95,7 @@ the interactive menu (`Effects — ...` entry):
 | `typing` | Every keystroke in the editor (via the editor's `handleInput`) | A bright core flashes on the border at the cursor's column, then a wavefront ring expands outward along the border, fading over ~18 frames (~1.3s at the default 70ms interval). |
 | `send` | pi's `input` event (you submit a prompt) | The whole border flashes bright once, fading over ~12 frames. |
 | `done` | pi's `agent_end` event (the agent finishes generating) | The border pulses three times, decaying over ~36 frames — a subtle "I'm done" signal. |
-| `working` | Between pi's `agent_start` and `agent_end` events | While the agent is generating, a tight bright highlight ping-pongs fast between the two ends of the border (~3x the flow speed), like a "thinking" indicator inside the frame. Stops the moment the agent finishes. |
+| `working` | Between pi's `agent_start` and `agent_end` events | While the agent is generating, a bright comet with a fading trail ping-pongs fast between the two ends of the border (9 columns per frame), like a "thinking" indicator inside the frame. Stops the moment the agent finishes. |
 
 Effects only fire while neon-editor is enabled and rendering in TUI mode.
 They are layered on top of the current render mode (`flow`/`pulse`/`static`/`swing`)

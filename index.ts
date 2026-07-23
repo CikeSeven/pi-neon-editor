@@ -242,14 +242,21 @@ function reactiveBoost(index: number, width: number, frame: number): number {
 		if (age >= 0 && age < 36) boost = Math.max(boost, Math.abs(Math.sin(age * 0.5)) * (1 - age / 36) * 0.85);
 	}
 
-	// Working bounce: while the agent is generating, a tight bright highlight
-	// ping-pongs fast between the two ends of the border.
+	// Working bounce: while the agent is generating, a bright comet with a
+	// fading trail ping-pongs fast between the two ends of the border.
 	if (config.fx.working && state.working) {
 		const span = width + 28;
-		const t = (frame * 6) % (span * 2);
-		const center = (t < span ? t : span * 2 - t) - 14;
-		const radius = 3 + (config.glow / 100) * 6;
-		boost = Math.max(boost, Math.max(0, 1 - Math.abs(index - center) / radius) * 0.95);
+		const t = (frame * 9) % (span * 2);
+		const forward = t < span;
+		const center = (forward ? t : span * 2 - t) - 14;
+		const radius = 4 + (config.glow / 100) * 8;
+		boost = Math.max(boost, Math.max(0, 1 - Math.abs(index - center) / radius));
+		// Comet trail: fades out behind the direction of travel.
+		const behind = forward ? index < center : index > center;
+		const trailDist = Math.abs(index - center);
+		if (behind && trailDist < 14) {
+			boost = Math.max(boost, (1 - trailDist / 14) * 0.6);
+		}
 	}
 
 	return boost;
