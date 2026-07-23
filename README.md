@@ -7,7 +7,7 @@ This package replaces the default editor component with a `CustomEditor` subclas
 ## Features
 
 - Flowing rainbow border with a moving glow highlight
-- Border presets: `neon`, `ocean`, `sunset`, `matrix`, `ember`, `violet`
+- Border presets: `neon`, `ocean`, `sunset`, `matrix`, `ember`, `violet` — each defines gradient colors plus an `accent` color used by every glow/highlight effect (no hard-coded white)
 - Render modes: `flow`, `pulse`, `static`, `swing`
 - Adjustable animation speed and glow strength
 - Adjustable border size: thickness (1-4 rows), inner padding, line glyph weight
@@ -74,6 +74,24 @@ neon-editor · enter to edit, esc to close
 Changes apply immediately and are persisted to the config file. All
 subcommands (`/neon preset ocean` etc.) remain available for scripting and
 quick edits; `/neon status` prints a one-line summary.
+
+## Presets
+
+Each preset bundles two parameters:
+
+| Preset | Gradient `colors` | `accent` (glow spot + all reactive effects) |
+| --- | --- | --- |
+| `neon` | rainbow | bright pink `[255,179,222]` |
+| `ocean` | blues | bright cyan `[224,247,250]` |
+| `sunset` | reds/oranges | bright peach `[255,214,165]` |
+| `matrix` | greens | bright green `[190,255,190]` |
+| `ember` | fiery oranges | bright amber `[255,236,179]` |
+| `violet` | purples | bright lavender `[234,204,255]` |
+
+The flow/pulse/static/swing glow spot, the typing ripple, the send flash,
+the done pulse, and the working comet all brighten **toward the preset's
+`accent`**, never toward a fixed white. Switching presets recolors every
+effect consistently. To tune a preset, edit `PRESETS` in `index.ts`.
 
 ## Render modes
 

@@ -46,53 +46,78 @@ const NEON_FACTORY = Symbol.for("neon-editor.factory");
 const MODES: NeonMode[] = ["flow", "pulse", "static", "swing"];
 const GLYPHS: Record<NeonGlyph, string> = { light: "─", heavy: "━", double: "═" };
 
-const PRESETS: Record<string, Rgb[]> = {
-	neon: [
-		[255, 95, 109],
-		[255, 195, 113],
-		[166, 227, 161],
-		[137, 220, 235],
-		[122, 162, 247],
-		[187, 154, 247],
-		[245, 194, 231],
-	],
-	ocean: [
-		[41, 98, 255],
-		[0, 180, 216],
-		[72, 202, 228],
-		[144, 224, 239],
-		[173, 232, 244],
-		[202, 240, 248],
-	],
-	sunset: [
-		[255, 0, 110],
-		[255, 89, 94],
-		[255, 153, 102],
-		[255, 195, 113],
-		[250, 163, 7],
-		[202, 103, 2],
-	],
-	matrix: [
-		[0, 59, 0],
-		[0, 117, 0],
-		[0, 176, 31],
-		[65, 226, 91],
-		[154, 255, 154],
-	],
-	ember: [
-		[255, 69, 0],
-		[255, 111, 54],
-		[255, 149, 5],
-		[255, 183, 3],
-		[255, 215, 64],
-	],
-	violet: [
-		[90, 24, 154],
-		[123, 44, 191],
-		[157, 78, 221],
-		[199, 125, 255],
-		[224, 170, 255],
-	],
+interface Preset {
+	/** Gradient colors along the border. */
+	colors: Rgb[];
+	/** Highlight color: glow spot, typing ripple, send flash, done pulse, working comet. */
+	accent: Rgb;
+}
+
+const PRESETS: Record<string, Preset> = {
+	neon: {
+		colors: [
+			[255, 95, 109],
+			[255, 195, 113],
+			[166, 227, 161],
+			[137, 220, 235],
+			[122, 162, 247],
+			[187, 154, 247],
+			[245, 194, 231],
+		],
+		accent: [255, 179, 222],
+	},
+	ocean: {
+		colors: [
+			[41, 98, 255],
+			[0, 180, 216],
+			[72, 202, 228],
+			[144, 224, 239],
+			[173, 232, 244],
+			[202, 240, 248],
+		],
+		accent: [224, 247, 250],
+	},
+	sunset: {
+		colors: [
+			[255, 0, 110],
+			[255, 89, 94],
+			[255, 153, 102],
+			[255, 195, 113],
+			[250, 163, 7],
+			[202, 103, 2],
+		],
+		accent: [255, 214, 165],
+	},
+	matrix: {
+		colors: [
+			[0, 59, 0],
+			[0, 117, 0],
+			[0, 176, 31],
+			[65, 226, 91],
+			[154, 255, 154],
+		],
+		accent: [190, 255, 190],
+	},
+	ember: {
+		colors: [
+			[255, 69, 0],
+			[255, 111, 54],
+			[255, 149, 5],
+			[255, 183, 3],
+			[255, 215, 64],
+		],
+		accent: [255, 236, 179],
+	},
+	violet: {
+		colors: [
+			[90, 24, 154],
+			[123, 44, 191],
+			[157, 78, 221],
+			[199, 125, 255],
+			[224, 170, 255],
+		],
+		accent: [234, 204, 255],
+	},
 };
 
 const DEFAULT_CONFIG: NeonConfig = {
@@ -189,21 +214,16 @@ function mix(a: Rgb, b: Rgb, t: number): Rgb {
 	];
 }
 
-function brighten(rgb: Rgb, factor: number): Rgb {
-	const k = clamp(factor, 0, 1);
-	return [
-		Math.round(rgb[0] + (255 - rgb[0]) * k),
-		Math.round(rgb[1] + (255 - rgb[1]) * k),
-		Math.round(rgb[2] + (255 - rgb[2]) * k),
-	];
-}
-
 function fg(rgb: Rgb): string {
 	return `\x1b[38;2;${rgb[0]};${rgb[1]};${rgb[2]}m`;
 }
 
 function palette(): Rgb[] {
-	return PRESETS[config.preset] ?? PRESETS.neon!;
+	return (PRESETS[config.preset] ?? PRESETS.neon!).colors;
+}
+
+function accent(): Rgb {
+	return (PRESETS[config.preset] ?? PRESETS.neon!).accent;
 }
 
 function isBorderLine(plain: string, width: number): boolean {
@@ -299,7 +319,7 @@ function colorAt(index: number, width: number, frame: number): Rgb {
 	}
 	boost = Math.max(boost, reactiveBoost(index, width, frame));
 
-	return brighten(color, boost);
+	return mix(color, accent(), boost);
 }
 
 function renderBorder(plain: string, width: number): string {
@@ -351,7 +371,7 @@ function glowKeyword(segment: string, keyword: string, frame: number): string {
 		for (let i = 0; i < chars.length; i++) {
 			const dist = Math.abs(i - shinePos);
 			const boost = dist === 0 ? 0.8 : dist === 1 ? 0.42 : dist === 2 ? 0.18 : 0;
-			out += `${fg(brighten(colors[i % colors.length]!, boost))}${chars[i]}`;
+			out += `${fg(mix(colors[i % colors.length]!, accent(), boost))}${chars[i]}`;
 		}
 
 		return `${out}\x1b[0m`;
