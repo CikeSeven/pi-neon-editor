@@ -247,7 +247,7 @@ function normalizeConfig(input: unknown): NeonConfig {
 		glyph: typeof raw.glyph === "string" && raw.glyph in GLYPHS ? (raw.glyph as NeonGlyph) : DEFAULT_CONFIG.glyph,
 		frame: typeof raw.frame === "boolean" ? raw.frame : DEFAULT_CONFIG.frame,
 		caps: typeof raw.caps === "string" && CAPS.includes(raw.caps as NeonCaps) ? (raw.caps as NeonCaps) : DEFAULT_CONFIG.caps,
-		margin: clamp(Math.round(Number(raw.margin) || DEFAULT_CONFIG.margin), 1, 4),
+		margin: clamp(Math.round((Number(raw.margin) || DEFAULT_CONFIG.margin) * 2) / 2, 1, 4),
 		workingStyle: WORKING_STYLES.includes(raw.workingStyle as NeonWorkingStyle)
 			? (raw.workingStyle as NeonWorkingStyle)
 			: DEFAULT_CONFIG.workingStyle,
@@ -456,10 +456,15 @@ function renderBorder(plain: string, width: number, edge: "top" | "bottom"): str
 /** Left/right side glyphs for one content row, colored from the animated gradient. */
 function sideDecor(width: number, row: number): { left: string; right: string } {
 	const set = GLYPHS[config.glyph] ?? GLYPHS.light;
+	// Fractional margins (x.5) fake a half column: edge-hugging thin blocks
+	// leave most of the border cell empty, adding ~half a cell of visual gap.
+	const half = config.margin % 1 !== 0;
 	const v = set.v[row % set.v.length]!;
+	const vLeft = half ? "▏" : v;
+	const vRight = half ? "▕" : v;
 	const shift = (row * 4) % Math.max(1, width);
-	const left = `${fg(colorAt(shift, width, state.frame))}${v}\x1b[0m`;
-	const right = `${fg(colorAt(Math.max(0, width - 1 - shift), width, state.frame))}${v}\x1b[0m`;
+	const left = `${fg(colorAt(shift, width, state.frame))}${vLeft}\x1b[0m`;
+	const right = `${fg(colorAt(Math.max(0, width - 1 - shift), width, state.frame))}${vRight}\x1b[0m`;
 	return { left, right };
 }
 
@@ -555,7 +560,10 @@ class NeonEditor extends CustomEditor {
 	override render(width: number): string[] {
 		// Frame mode needs a horizontal margin so text never touches the sides.
 		// Adjust BEFORE super.render so this frame's layout is already correct.
-		const wantPad = Math.max(1, config.margin);
+		// Fractional margins keep the lower integer padding; the thin edge-hugging
+		// side glyphs contribute the extra ~half cell of visual gap.
+		const half = config.margin % 1 !== 0;
+		const wantPad = Math.max(1, half ? Math.floor(config.margin) : config.margin);
 		if (config.enabled && config.frame && this.getPaddingX() !== wantPad) {
 			this.setPaddingX(wantPad);
 			this.autoPad = true;
@@ -663,7 +671,7 @@ function applyEditor(ctx: ExtensionContext, enabled: boolean, notifyUser = true)
 
 function usage(ctx: ExtensionContext): void {
 	ctx.ui.notify(
-		"usage: /neon [on|off|status|preset <name>|mode <flow|pulse|static|swing>|working <comet|surge>|speed <40-300>|glow <0-100>|thickness <1-4>|pad <0-3>|glyph <light|heavy|double|dashed|dotted|mixed>|frame <on|off>|margin <1-4>|caps <none|block|diamond|angle>|fx <typing|send|done|working> <on|off>|keyword [word]|reset]",
+		"usage: /neon [on|off|status|preset <name>|mode <flow|pulse|static|swing>|working <comet|surge>|speed <40-300>|glow <0-100>|thickness <1-4>|pad <0-3>|glyph <light|heavy|double|dashed|dotted|mixed>|frame <on|off>|margin <1-4, 0.5 steps>|caps <none|block|diamond|angle>|fx <typing|send|done|working> <on|off>|keyword [word]|reset]",
 		"warning",
 	);
 }
@@ -794,7 +802,7 @@ async function neonMenu(ctx: ExtensionContext): Promise<void> {
 				requestRender();
 				break;
 			case "margin": {
-				const next = await ctx.ui.select(`Frame margin (current: ${config.margin})`, ["1", "2", "3", "4"]);
+				const next = await ctx.ui.select(`Frame margin (current: ${config.margin})`, ["1", "1.5", "2", "2.5", "3", "3.5", "4"]);
 				if (next) {
 					config.margin = Number(next);
 					saveConfig();
@@ -992,8 +1000,8 @@ export default function neonEditor(pi: ExtensionAPI) {
 					return;
 				case "margin": {
 					const margin = Number(value);
-					if (!Number.isInteger(margin) || margin < 1 || margin > 4) {
-						ctx.ui.notify("usage: /neon margin <1-4>", "warning");
+					if (!Number.isFinite(margin) || margin < 1 || margin > 4 || Math.round(margin * 2) !== margin * 2) {
+						ctx.ui.notify("usage: /neon margin <1-4, 0.5 steps>", "warning");
 						return;
 					}
 					config.margin = margin;
