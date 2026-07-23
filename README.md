@@ -95,6 +95,40 @@ the done pulse, and the working comet all brighten **toward the preset's
 `accent`**, never toward a fixed white. Switching presets recolors every
 effect consistently. To tune a preset, edit `PRESETS` in `index.ts`.
 
+## Custom presets
+
+You can define your own presets in the config file — no code changes
+needed. Add a `presets` object to `~/.pi/agent/neon-editor.json`:
+
+```json
+{
+  "preset": "sakura",
+  "presets": {
+    "sakura": {
+      "colors": [[255, 183, 197], [255, 133, 162], [219, 68, 116], [147, 20, 68]],
+      "accent": [255, 224, 232]
+    },
+    "toxic": {
+      "colors": [[57, 255, 20], [0, 143, 17]]
+    }
+  }
+}
+```
+
+Rules:
+
+- `colors`: one or more `[r, g, b]` triples (0-255). The border gradient
+  interpolates through them in order.
+- `accent`: optional `[r, g, b]`. Used by the glow spot and every reactive
+  effect (typing ripple, send flash, done pulse, working comet). If omitted,
+  the brightest entry of `colors` is used.
+- Names must match `^[a-z0-9][a-z0-9_-]{0,23}$` (case-insensitive) and are
+  lowercased. Invalid entries are silently ignored.
+- A custom preset with the same name as a built-in **overrides** it.
+- Custom presets show up in `/neon preset <name>`, the interactive menu's
+  preset picker, and survive config saves. `/reload` (or a `/neon` command
+  that rewrites the config) picks up edits.
+
 ## Render modes
 
 | Mode | Look |
@@ -191,7 +225,8 @@ Example:
   "padY": 0,
   "glyph": "light",
   "fx": { "typing": true, "send": true, "done": true, "working": true },
-  "workingStyle": "comet"
+  "workingStyle": "comet",
+  "presets": {}
 }
 ```
 

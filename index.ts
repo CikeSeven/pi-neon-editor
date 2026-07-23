@@ -40,6 +40,8 @@ interface NeonConfig {
 	glyph: NeonGlyph;
 	fx: NeonFx;
 	workingStyle: NeonWorkingStyle;
+	/** User-defined presets from the config file; merged over the built-ins. */
+	presets: Record<string, Preset>;
 }
 
 const CONFIG_PATH = path.join(os.homedir(), ".pi", "agent", "neon-editor.json");
@@ -135,10 +137,11 @@ const DEFAULT_CONFIG: NeonConfig = {
 	glyph: "light",
 	fx: { typing: true, send: true, done: true, working: true },
 	workingStyle: "comet",
+	presets: {},
 };
 
 function freshDefaults(): NeonConfig {
-	return { ...DEFAULT_CONFIG, fx: { ...DEFAULT_CONFIG.fx } };
+	return { ...DEFAULT_CONFIG, fx: { ...DEFAULT_CONFIG.fx }, presets: {} };
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -150,10 +153,47 @@ function clampNumber(value: unknown, min: number, max: number, fallback: number)
 	return Number.isFinite(num) ? clamp(Math.round(num), min, max) : fallback;
 }
 
+function parseRgb(value: unknown): Rgb | undefined {
+	if (!Array.isArray(value) || value.length !== 3) return undefined;
+	const nums = value.map(Number);
+	if (nums.some((n) => !Number.isFinite(n))) return undefined;
+	return [clamp(Math.round(nums[0]!), 0, 255), clamp(Math.round(nums[1]!), 0, 255), clamp(Math.round(nums[2]!), 0, 255)];
+}
+
+function brightest(colors: Rgb[]): Rgb {
+	let best = colors[0]!;
+	for (const color of colors) {
+		if (color[0] + color[1] + color[2] > best[0] + best[1] + best[2]) best = color;
+	}
+	return best;
+}
+
+/** Parse a user-defined preset. accent is optional: defaults to the brightest color. */
+function parsePreset(value: unknown): Preset | undefined {
+	const raw = value as Partial<Preset> | undefined;
+	if (!raw || !Array.isArray(raw.colors)) return undefined;
+	const colors = raw.colors.map(parseRgb).filter((c): c is Rgb => Boolean(c));
+	if (colors.length === 0) return undefined;
+	return { colors, accent: parseRgb(raw.accent) ?? brightest(colors) };
+}
+
+const PRESET_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,23}$/i;
+
 function normalizeConfig(input: unknown): NeonConfig {
 	const raw = (input ?? {}) as Partial<NeonConfig>;
-	const preset = typeof raw.preset === "string" && raw.preset in PRESETS ? raw.preset : DEFAULT_CONFIG.preset;
 	const mode = typeof raw.mode === "string" && MODES.includes(raw.mode as NeonMode) ? (raw.mode as NeonMode) : DEFAULT_CONFIG.mode;
+
+	const presets: Record<string, Preset> = {};
+	if (raw.presets && typeof raw.presets === "object") {
+		for (const [name, value] of Object.entries(raw.presets)) {
+			if (!PRESET_NAME_RE.test(name)) continue;
+			const parsed = parsePreset(value);
+			if (parsed) presets[name.toLowerCase()] = parsed;
+		}
+	}
+
+	const presetNames = { ...PRESETS, ...presets };
+	const preset = typeof raw.preset === "string" && raw.preset in presetNames ? raw.preset : DEFAULT_CONFIG.preset;
 
 	return {
 		enabled: typeof raw.enabled === "boolean" ? raw.enabled : DEFAULT_CONFIG.enabled,
@@ -174,6 +214,7 @@ function normalizeConfig(input: unknown): NeonConfig {
 			done: typeof raw.fx?.done === "boolean" ? raw.fx.done : DEFAULT_CONFIG.fx.done,
 			working: typeof raw.fx?.working === "boolean" ? raw.fx.working : DEFAULT_CONFIG.fx.working,
 		},
+		presets,
 	};
 }
 
@@ -225,12 +266,17 @@ function fg(rgb: Rgb): string {
 	return `\x1b[38;2;${rgb[0]};${rgb[1]};${rgb[2]}m`;
 }
 
+function allPresets(): Record<string, Preset> {
+	// User presets merge over (and may override) the built-ins.
+	return { ...PRESETS, ...config.presets };
+}
+
 function palette(): Rgb[] {
-	return (PRESETS[config.preset] ?? PRESETS.neon!).colors;
+	return (allPresets()[config.preset] ?? PRESETS.neon!).colors;
 }
 
 function accent(): Rgb {
-	return (PRESETS[config.preset] ?? PRESETS.neon!).accent;
+	return (allPresets()[config.preset] ?? PRESETS.neon!).accent;
 }
 
 function isBorderLine(plain: string, width: number): boolean {
@@ -583,7 +629,7 @@ async function neonMenu(ctx: ExtensionContext): Promise<void> {
 				applyEditor(ctx, !config.enabled);
 				break;
 			case "preset": {
-				const next = await ctx.ui.select(`Preset (current: ${config.preset})`, Object.keys(PRESETS));
+				const next = await ctx.ui.select(`Preset (current: ${config.preset})`, Object.keys(allPresets()));
 				if (next) {
 					config.preset = next;
 					saveConfig();
@@ -758,8 +804,8 @@ export default function neonEditor(pi: ExtensionAPI) {
 					applyEditor(ctx, false);
 					return;
 				case "preset":
-					if (!value || !(value in PRESETS)) {
-						ctx.ui.notify(`usage: /neon preset <${Object.keys(PRESETS).join("|")}>`, "warning");
+					if (!value || !(value in allPresets())) {
+						ctx.ui.notify(`usage: /neon preset <${Object.keys(allPresets()).join("|")}>`, "warning");
 						return;
 					}
 					config.preset = value;
