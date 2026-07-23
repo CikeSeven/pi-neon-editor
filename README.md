@@ -36,7 +36,9 @@ Manual (development): clone or copy this repository into pi's global extension d
 - Border presets: `neon`, `ocean`, `sunset`, `matrix`, `ember`, `violet` — each defines gradient colors plus an `accent` color used by every glow/highlight effect (no hard-coded white)
 - Render modes: `flow`, `pulse`, `static`, `swing`
 - Adjustable animation speed and glow strength
-- Adjustable border size: thickness (1-4 rows), inner padding, line glyph weight
+- Adjustable border size: thickness (1-4 rows), inner padding, six line glyphs
+- Full frame mode: gradient side borders with rounded corners (`/neon frame on`)
+- End caps ornaments for the horizontal borders (`/neon caps block|diamond|angle`)
 - Optional keyword glow, e.g. make `ultrathink` shine while typing
 - Reactive effects linked to your workflow: typing ripples, send flash, done pulse
 - Persistent user config at `~/.pi/agent/neon-editor.json`
@@ -64,7 +66,9 @@ Then control it with:
 /neon glow 70            Set glow strength, range 0-100
 /neon thickness 2        Border height in rows, range 1-4
 /neon pad 1              Blank lines between border and text, range 0-3
-/neon glyph heavy        Border line weight: light | heavy | double
+/neon glyph heavy        Border line glyph: light | heavy | double | dashed | dotted | mixed
+/neon frame on           Full frame: gradient side borders + rounded corners
+/neon caps block         End caps on the horizontal borders: none | block | diamond | angle
 /neon fx send off        Toggle a reactive effect: typing | send | done | working
 /neon keyword ultrathink Highlight a keyword while typing
 /neon keyword            Clear keyword highlight
@@ -114,6 +118,31 @@ The flow/pulse/static/swing glow spot, the typing ripple, the send flash,
 the done pulse, and the working comet all brighten **toward the preset's
 `accent`**, never toward a fixed white. Switching presets recolors every
 effect consistently. To tune a preset, edit `PRESETS` in `index.ts`.
+
+## Frame and caps
+
+`/neon frame on` turns the box into a full rectangle: the top/bottom borders
+gain corners and every content row gets gradient side borders that flow with
+the animation (the editor auto-adds a one-column inner margin so text never
+touches the sides; the margin is removed again when the frame is turned off).
+Corner/vertical glyphs follow the current line glyph:
+
+| Glyph | Horizontal | Vertical | Corners |
+| --- | --- | --- | --- |
+| `light` | ─ | │ | ╭ ╮ ╰ ╯ |
+| `heavy` | ━ | ┃ | ┏ ┓ ┗ ┛ |
+| `double` | ═ | ║ | ╔ ╗ ╚ ╝ |
+| `dashed` | ┄ | ┆ | ╭ ╮ ╰ ╯ |
+| `dotted` | ┈ | ┊ | ╭ ╮ ╰ ╯ |
+| `mixed` | ─═ alternating | │║ alternating | ┏ ┓ ┗ ┛ |
+
+`/neon caps <style>` decorates the two ends of the horizontal borders when
+the frame is **off** (frame corners take precedence when it is on):
+
+- `block` — `◢…◣` on top, `◥…◤` on the bottom
+- `diamond` — `◆…◆` on both
+- `angle` — `⟨…⟩` on both
+- `none` — plain ends (default)
 
 ## Custom presets
 
@@ -205,7 +234,7 @@ controlled by three independent settings:
 | --- | --- | --- | --- | --- |
 | `thickness` | `/neon thickness <1-4>` | 1-4 rows | 1 | Border height. The rows are rendered **directly adjacent** to each other, forming one solid thick border. There is no gap between them. |
 | `padY` | `/neon pad <0-3>` | 0-3 rows | 0 | Inner padding: blank rows inserted **between the border and the text** (like CSS padding). Applied to both top and bottom. `0` means the text touches the border rows directly. |
-| `glyph` | `/neon glyph <light\|heavy\|double>` | 3 styles | light | Line weight of the border characters: `light` = `─`, `heavy` = `━`, `double` = `═`. Purely visual; takes no extra rows. |
+| `glyph` | `/neon glyph <...>` | 6 styles | light | Line glyph of the border characters: `light` = `─`, `heavy` = `━`, `double` = `═`, `dashed` = `┄`, `dotted` = `┈`, `mixed` = alternating `─═`. Purely visual; takes no extra rows. |
 
 Example — a visibly chunky, roomy frame:
 
@@ -244,6 +273,8 @@ Example:
   "thickness": 1,
   "padY": 0,
   "glyph": "light",
+  "frame": false,
+  "caps": "none",
   "fx": { "typing": true, "send": true, "done": true, "working": true },
   "workingStyle": "comet",
   "presets": {}

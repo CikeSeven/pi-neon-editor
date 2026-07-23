@@ -18,7 +18,8 @@ import * as path from "node:path";
 type Rgb = [number, number, number];
 type NeonMode = "flow" | "pulse" | "static" | "swing";
 type NeonWorkingStyle = "comet" | "surge";
-type NeonGlyph = "light" | "heavy" | "double";
+type NeonGlyph = "light" | "heavy" | "double" | "dashed" | "dotted" | "mixed";
+type NeonCaps = "none" | "block" | "diamond" | "angle";
 type EditorFactory = NonNullable<ReturnType<ExtensionContext["ui"]["getEditorComponent"]>>;
 
 interface NeonFx {
@@ -38,6 +39,8 @@ interface NeonConfig {
 	thickness: number;
 	padY: number;
 	glyph: NeonGlyph;
+	frame: boolean;
+	caps: NeonCaps;
 	fx: NeonFx;
 	workingStyle: NeonWorkingStyle;
 	/** User-defined presets from the config file; merged over the built-ins. */
@@ -49,7 +52,40 @@ const SGR_RE = /\x1b\[[0-9;]*m/g;
 const NEON_FACTORY = Symbol.for("neon-editor.factory");
 const MODES: NeonMode[] = ["flow", "pulse", "static", "swing"];
 const WORKING_STYLES: NeonWorkingStyle[] = ["comet", "surge"];
-const GLYPHS: Record<NeonGlyph, string> = { light: "─", heavy: "━", double: "═" };
+interface GlyphSet {
+	/** Horizontal border pattern, cycled per column. */
+	h: string[];
+	/** Vertical side pattern (frame mode), cycled per row. */
+	v: string[];
+	tl: string;
+	tr: string;
+	bl: string;
+	br: string;
+}
+
+const GLYPHS: Record<NeonGlyph, GlyphSet> = {
+	light: { h: ["─"], v: ["│"], tl: "╭", tr: "╮", bl: "╰", br: "╯" },
+	heavy: { h: ["━"], v: ["┃"], tl: "┏", tr: "┓", bl: "┗", br: "┛" },
+	double: { h: ["═"], v: ["║"], tl: "╔", tr: "╗", bl: "╚", br: "╝" },
+	dashed: { h: ["┄"], v: ["┆"], tl: "╭", tr: "╮", bl: "╰", br: "╯" },
+	dotted: { h: ["┈"], v: ["┊"], tl: "╭", tr: "╮", bl: "╰", br: "╯" },
+	mixed: { h: ["─", "═"], v: ["│", "║"], tl: "┏", tr: "┓", bl: "┗", br: "┛" },
+};
+
+const CAPS: NeonCaps[] = ["none", "block", "diamond", "angle"];
+
+function capChar(caps: NeonCaps, edge: "top" | "bottom", side: "left" | "right"): string {
+	switch (caps) {
+		case "block":
+			return edge === "top" ? (side === "left" ? "◢" : "◣") : side === "left" ? "◥" : "◤";
+		case "diamond":
+			return "◆";
+		case "angle":
+			return side === "left" ? "⟨" : "⟩";
+		default:
+			return "─";
+	}
+}
 
 interface Preset {
 	/** Gradient colors along the border. */
@@ -135,6 +171,8 @@ const DEFAULT_CONFIG: NeonConfig = {
 	thickness: 1,
 	padY: 0,
 	glyph: "light",
+	frame: false,
+	caps: "none",
 	fx: { typing: true, send: true, done: true, working: true },
 	workingStyle: "comet",
 	presets: {},
@@ -205,6 +243,8 @@ function normalizeConfig(input: unknown): NeonConfig {
 		thickness: clampNumber(raw.thickness, 1, 4, DEFAULT_CONFIG.thickness),
 		padY: clampNumber(raw.padY, 0, 3, DEFAULT_CONFIG.padY),
 		glyph: typeof raw.glyph === "string" && raw.glyph in GLYPHS ? (raw.glyph as NeonGlyph) : DEFAULT_CONFIG.glyph,
+		frame: typeof raw.frame === "boolean" ? raw.frame : DEFAULT_CONFIG.frame,
+		caps: typeof raw.caps === "string" && CAPS.includes(raw.caps as NeonCaps) ? (raw.caps as NeonCaps) : DEFAULT_CONFIG.caps,
 		workingStyle: WORKING_STYLES.includes(raw.workingStyle as NeonWorkingStyle)
 			? (raw.workingStyle as NeonWorkingStyle)
 			: DEFAULT_CONFIG.workingStyle,
@@ -385,10 +425,10 @@ function colorAt(index: number, width: number, frame: number): Rgb {
 	return mix(color, accent(), boost);
 }
 
-function renderBorder(plain: string, width: number): string {
+function renderBorder(plain: string, width: number, edge: "top" | "bottom"): string {
 	let out = "";
 	const chars = [...plain];
-	const glyph = GLYPHS[config.glyph] ?? GLYPHS.light;
+	const set = GLYPHS[config.glyph] ?? GLYPHS.light;
 
 	for (let i = 0; i < chars.length; i++) {
 		const ch = chars[i]!;
@@ -396,10 +436,49 @@ function renderBorder(plain: string, width: number): string {
 			out += ch;
 			continue;
 		}
+		let glyph = set.h[i % set.h.length]!;
+		if (config.frame) {
+			// Full frame: corners replace the first/last border characters.
+			if (i === 0) glyph = edge === "top" ? set.tl : set.bl;
+			else if (i === chars.length - 1) glyph = edge === "top" ? set.tr : set.br;
+		} else if (config.caps !== "none" && (i === 0 || i === chars.length - 1)) {
+			glyph = capChar(config.caps, edge, i === 0 ? "left" : "right");
+		}
 		out += `${fg(colorAt(i, width, state.frame))}${ch === "─" ? glyph : ch}`;
 	}
 
 	return `${out}\x1b[0m`;
+}
+
+/** Left/right side glyphs for one content row, colored from the animated gradient. */
+function sideDecor(width: number, row: number): { left: string; right: string } {
+	const set = GLYPHS[config.glyph] ?? GLYPHS.light;
+	const v = set.v[row % set.v.length]!;
+	const shift = (row * 4) % Math.max(1, width);
+	const left = `${fg(colorAt(shift, width, state.frame))}${v}\x1b[0m`;
+	const right = `${fg(colorAt(Math.max(0, width - 1 - shift), width, state.frame))}${v}\x1b[0m`;
+	return { left, right };
+}
+
+/** Replace the first/last visible column of a full-width line with side glyphs. */
+function wrapSides(line: string, width: number, row: number): string {
+	if (visibleWidth(stripSgr(line)) !== width) return line;
+	const tokens = line.match(/\x1b\[[0-9;]*m|./gsu) ?? [];
+	const visible: number[] = [];
+	for (let i = 0; i < tokens.length; i++) {
+		if (!tokens[i]!.startsWith("\x1b[")) visible.push(i);
+	}
+	if (visible.length < 2) return line;
+	const { left, right } = sideDecor(width, row);
+	tokens[visible[0]!] = left;
+	tokens[visible[visible.length - 1]!] = right;
+	return tokens.join("");
+}
+
+/** Blank pad row that keeps the frame's sides continuous. */
+function sidePadLine(width: number, row: number): string {
+	const { left, right } = sideDecor(width, row);
+	return `${left}${" ".repeat(Math.max(0, width - 2))}${right}`;
 }
 
 function escapeRegExp(value: string): string {
@@ -451,6 +530,9 @@ function markNeonFactory(factory: EditorFactory): EditorFactory {
 }
 
 class NeonEditor extends CustomEditor {
+	/** True when we auto-raised paddingX for frame mode (so we can restore it). */
+	private autoPad = false;
+
 	constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) {
 		super(tui, theme, keybindings);
 		state.tui = tui;
@@ -468,6 +550,16 @@ class NeonEditor extends CustomEditor {
 	}
 
 	override render(width: number): string[] {
+		// Frame mode needs a horizontal margin so text never touches the sides.
+		// Adjust BEFORE super.render so this frame's layout is already correct.
+		if (config.enabled && config.frame && this.getPaddingX() < 1) {
+			this.setPaddingX(1);
+			this.autoPad = true;
+		} else if (this.autoPad && (!config.enabled || !config.frame) && this.getPaddingX() === 1) {
+			this.setPaddingX(0);
+			this.autoPad = false;
+		}
+
 		const lines = super.render(width);
 		if (!config.enabled) return lines;
 
@@ -479,24 +571,29 @@ class NeonEditor extends CustomEditor {
 
 		const topIsBorder = Boolean(borderFlags[0]);
 		const bottomIsBorder = lastBorderIndex > 0;
-		const padLines = Array.from({ length: config.padY }, () => "");
-		const borderRows = (plain: string) =>
-			Array.from({ length: config.thickness }, () => renderBorder(plain, width));
+		let sideRow = 0;
+		const padLines = () => Array.from({ length: config.padY }, () => (config.frame ? sidePadLine(width, sideRow++) : ""));
+		const borderRows = (plain: string, edge: "top" | "bottom") =>
+			Array.from({ length: config.thickness }, () => renderBorder(plain, width, edge));
 
 		const out: string[] = [];
 		if (topIsBorder) {
-			out.push(...borderRows(stripSgr(lines[0]!)), ...padLines);
+			out.push(...borderRows(stripSgr(lines[0]!), "top"), ...padLines());
 		}
 
 		for (let i = topIsBorder ? 1 : 0; i < lines.length; i++) {
-			const line = lines[i]!;
+			let line = lines[i]!;
 			if (bottomIsBorder && i === lastBorderIndex) {
-				out.push(...padLines, ...borderRows(stripSgr(line)));
+				out.push(...padLines(), ...borderRows(stripSgr(line), "bottom"));
 				continue;
 			}
 			if (config.keyword && !borderFlags[i]) {
-				out.push(mapPlainSegments(line, (segment) => glowKeyword(segment, config.keyword, state.frame)));
-				continue;
+				line = mapPlainSegments(line, (segment) => glowKeyword(segment, config.keyword, state.frame));
+			}
+			// Frame sides: only rows inside the box (autocomplete below the box is skipped).
+			if (config.frame && !borderFlags[i] && (!bottomIsBorder || i < lastBorderIndex)) {
+				line = wrapSides(line, width, sideRow);
+				sideRow++;
 			}
 			out.push(line);
 		}
@@ -562,7 +659,7 @@ function applyEditor(ctx: ExtensionContext, enabled: boolean, notifyUser = true)
 
 function usage(ctx: ExtensionContext): void {
 	ctx.ui.notify(
-		"usage: /neon [on|off|status|preset <name>|mode <flow|pulse|static|swing>|working <comet|surge>|speed <40-300>|glow <0-100>|thickness <1-4>|pad <0-3>|glyph <light|heavy|double>|fx <typing|send|done|working> <on|off>|keyword [word]|reset]",
+		"usage: /neon [on|off|status|preset <name>|mode <flow|pulse|static|swing>|working <comet|surge>|speed <40-300>|glow <0-100>|thickness <1-4>|pad <0-3>|glyph <light|heavy|double|dashed|dotted|mixed>|frame <on|off>|caps <none|block|diamond|angle>|fx <typing|send|done|working> <on|off>|keyword [word]|reset]",
 		"warning",
 	);
 }
@@ -578,7 +675,7 @@ function fxLabel(): string {
 
 function notifyStatus(ctx: ExtensionContext): void {
 	ctx.ui.notify(
-		`neon: ${config.enabled ? "on" : "off"} · preset ${config.preset} · mode ${config.mode} · speed ${config.intervalMs}ms · glow ${config.glow} · thickness ${config.thickness} · pad ${config.padY} · glyph ${config.glyph} · fx ${fxLabel()} · working-style ${config.workingStyle} · keyword ${config.keyword || "-"}`,
+		`neon: ${config.enabled ? "on" : "off"} · preset ${config.preset} · mode ${config.mode} · speed ${config.intervalMs}ms · glow ${config.glow} · thickness ${config.thickness} · pad ${config.padY} · glyph ${config.glyph} · frame ${config.frame ? "on" : "off"} · caps ${config.caps} · fx ${fxLabel()} · working-style ${config.workingStyle} · keyword ${config.keyword || "-"}`,
 		"info",
 	);
 }
@@ -614,6 +711,8 @@ async function neonMenu(ctx: ExtensionContext): Promise<void> {
 			["thickness", `Thickness — ${config.thickness}`],
 			["pad", `Pad — ${config.padY}`],
 			["glyph", `Glyph — ${config.glyph}`],
+			["frame", `Frame (sides+corners) — ${config.frame ? "on" : "off"}`],
+			["caps", `End caps — ${config.caps}`],
 			["keyword", `Keyword — ${config.keyword || "-"}`],
 			["fx", `Effects — ${fxLabel()}`],
 			["workingStyle", `Working style — ${config.workingStyle}`],
@@ -679,6 +778,20 @@ async function neonMenu(ctx: ExtensionContext): Promise<void> {
 				const next = await ctx.ui.select(`Glyph (current: ${config.glyph})`, Object.keys(GLYPHS));
 				if (next) {
 					config.glyph = next as NeonGlyph;
+					saveConfig();
+					requestRender();
+				}
+				break;
+			}
+			case "frame":
+				config.frame = !config.frame;
+				saveConfig();
+				requestRender();
+				break;
+			case "caps": {
+				const next = await ctx.ui.select(`End caps (current: ${config.caps})`, CAPS);
+				if (next) {
+					config.caps = next as NeonCaps;
 					saveConfig();
 					requestRender();
 				}
@@ -781,7 +894,7 @@ export default function neonEditor(pi: ExtensionAPI) {
 	pi.registerCommand("neon", {
 		description: "Control the neon-editor input border animation",
 		getArgumentCompletions: (prefix) => {
-			const words = ["on", "off", "status", "preset", "mode", "working", "speed", "glow", "keyword", "thickness", "pad", "glyph", "fx", "reset"];
+			const words = ["on", "off", "status", "preset", "mode", "working", "speed", "glow", "keyword", "thickness", "pad", "glyph", "frame", "caps", "fx", "reset"];
 			const filtered = words.filter((word) => word.startsWith(prefix));
 			return filtered.length > 0 ? filtered.map((word) => ({ value: word, label: word })) : null;
 		},
@@ -852,6 +965,26 @@ export default function neonEditor(pi: ExtensionAPI) {
 					saveConfig();
 					requestRender();
 					ctx.ui.notify(config.keyword ? `neon keyword: ${config.keyword}` : "neon keyword cleared", "info");
+					return;
+				case "frame":
+					if (value !== "on" && value !== "off") {
+						ctx.ui.notify("usage: /neon frame <on|off>", "warning");
+						return;
+					}
+					config.frame = value === "on";
+					saveConfig();
+					requestRender();
+					ctx.ui.notify(`neon frame: ${value}`, "info");
+					return;
+				case "caps":
+					if (!CAPS.includes(value as NeonCaps)) {
+						ctx.ui.notify(`usage: /neon caps <${CAPS.join("|")}>`, "warning");
+						return;
+					}
+					config.caps = value as NeonCaps;
+					saveConfig();
+					requestRender();
+					ctx.ui.notify(`neon caps: ${value}`, "info");
 					return;
 				case "fx": {
 					const [name, toggle] = value.split(/\s+/).filter(Boolean);
