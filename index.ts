@@ -17,6 +17,7 @@ import * as path from "node:path";
 
 type Rgb = [number, number, number];
 type NeonMode = "flow" | "pulse" | "static";
+type NeonGlyph = "light" | "heavy" | "double";
 type EditorFactory = NonNullable<ReturnType<ExtensionContext["ui"]["getEditorComponent"]>>;
 
 interface NeonConfig {
@@ -26,12 +27,16 @@ interface NeonConfig {
 	intervalMs: number;
 	glow: number;
 	keyword: string;
+	thickness: number;
+	padY: number;
+	glyph: NeonGlyph;
 }
 
 const CONFIG_PATH = path.join(os.homedir(), ".pi", "agent", "neon-editor.json");
 const SGR_RE = /\x1b\[[0-9;]*m/g;
 const NEON_FACTORY = Symbol.for("neon-editor.factory");
 const MODES: NeonMode[] = ["flow", "pulse", "static"];
+const GLYPHS: Record<NeonGlyph, string> = { light: "─", heavy: "━", double: "═" };
 
 const PRESETS: Record<string, Rgb[]> = {
 	neon: [
@@ -89,6 +94,9 @@ const DEFAULT_CONFIG: NeonConfig = {
 	intervalMs: 70,
 	glow: 70,
 	keyword: "",
+	thickness: 1,
+	padY: 0,
+	glyph: "light",
 };
 
 function clamp(value: number, min: number, max: number): number {
@@ -112,6 +120,9 @@ function normalizeConfig(input: unknown): NeonConfig {
 		intervalMs: clampNumber(raw.intervalMs, 40, 300, DEFAULT_CONFIG.intervalMs),
 		glow: clampNumber(raw.glow, 0, 100, DEFAULT_CONFIG.glow),
 		keyword: typeof raw.keyword === "string" ? raw.keyword : DEFAULT_CONFIG.keyword,
+		thickness: clampNumber(raw.thickness, 1, 4, DEFAULT_CONFIG.thickness),
+		padY: clampNumber(raw.padY, 0, 3, DEFAULT_CONFIG.padY),
+		glyph: typeof raw.glyph === "string" && raw.glyph in GLYPHS ? (raw.glyph as NeonGlyph) : DEFAULT_CONFIG.glyph,
 	};
 }
 
@@ -202,6 +213,7 @@ function colorAt(index: number, width: number, frame: number): Rgb {
 function renderBorder(plain: string, width: number): string {
 	let out = "";
 	const chars = [...plain];
+	const glyph = GLYPHS[config.glyph] ?? GLYPHS.light;
 
 	for (let i = 0; i < chars.length; i++) {
 		const ch = chars[i]!;
@@ -209,7 +221,7 @@ function renderBorder(plain: string, width: number): string {
 			out += ch;
 			continue;
 		}
-		out += `${fg(colorAt(i, width, state.frame))}${ch}`;
+		out += `${fg(colorAt(i, width, state.frame))}${ch === "─" ? glyph : ch}`;
 	}
 
 	return `${out}\x1b[0m`;
@@ -279,16 +291,31 @@ class NeonEditor extends CustomEditor {
 			if (borderFlags[i]) lastBorderIndex = i;
 		}
 
-		return lines.map((line, index) => {
-			const plain = stripSgr(line);
-			if (borderFlags[index] && (index === 0 || index === lastBorderIndex)) {
-				return renderBorder(plain, width);
+		const topIsBorder = Boolean(borderFlags[0]);
+		const bottomIsBorder = lastBorderIndex > 0;
+		const padLines = Array.from({ length: config.padY }, () => "");
+		const borderRows = (plain: string) =>
+			Array.from({ length: config.thickness }, () => renderBorder(plain, width));
+
+		const out: string[] = [];
+		if (topIsBorder) {
+			out.push(...borderRows(stripSgr(lines[0]!)), ...padLines);
+		}
+
+		for (let i = topIsBorder ? 1 : 0; i < lines.length; i++) {
+			const line = lines[i]!;
+			if (bottomIsBorder && i === lastBorderIndex) {
+				out.push(...padLines, ...borderRows(stripSgr(line)));
+				continue;
 			}
-			if (config.keyword) {
-				return mapPlainSegments(line, (segment) => glowKeyword(segment, config.keyword, state.frame));
+			if (config.keyword && !borderFlags[i]) {
+				out.push(mapPlainSegments(line, (segment) => glowKeyword(segment, config.keyword, state.frame)));
+				continue;
 			}
-			return line;
-		});
+			out.push(line);
+		}
+
+		return out;
 	}
 }
 
@@ -345,7 +372,7 @@ function applyEditor(ctx: ExtensionContext, enabled: boolean, notifyUser = true)
 
 function usage(ctx: ExtensionContext): void {
 	ctx.ui.notify(
-		"usage: /neon [on|off|status|preset <name>|mode <flow|pulse|static>|speed <40-300>|glow <0-100>|keyword [word]|reset]",
+		"usage: /neon [on|off|status|preset <name>|mode <flow|pulse|static>|speed <40-300>|glow <0-100>|thickness <1-4>|pad <0-3>|glyph <light|heavy|double>|keyword [word]|reset]",
 		"warning",
 	);
 }
@@ -372,7 +399,7 @@ export default function neonEditor(pi: ExtensionAPI) {
 	pi.registerCommand("neon", {
 		description: "Control the neon-editor input border animation",
 		getArgumentCompletions: (prefix) => {
-			const words = ["on", "off", "status", "preset", "mode", "speed", "glow", "keyword", "reset"];
+			const words = ["on", "off", "status", "preset", "mode", "speed", "glow", "keyword", "thickness", "pad", "glyph", "reset"];
 			const filtered = words.filter((word) => word.startsWith(prefix));
 			return filtered.length > 0 ? filtered.map((word) => ({ value: word, label: word })) : null;
 		},
@@ -438,6 +465,40 @@ export default function neonEditor(pi: ExtensionAPI) {
 					requestRender();
 					ctx.ui.notify(config.keyword ? `neon keyword: ${config.keyword}` : "neon keyword cleared", "info");
 					return;
+				case "thickness": {
+					const n = Number(value);
+					if (!Number.isFinite(n)) {
+						ctx.ui.notify("usage: /neon thickness <1-4>", "warning");
+						return;
+					}
+					config.thickness = clamp(Math.round(n), 1, 4);
+					saveConfig();
+					requestRender();
+					ctx.ui.notify(`neon thickness: ${config.thickness}`, "info");
+					return;
+				}
+				case "pad": {
+					const n = Number(value);
+					if (!Number.isFinite(n)) {
+						ctx.ui.notify("usage: /neon pad <0-3>", "warning");
+						return;
+					}
+					config.padY = clamp(Math.round(n), 0, 3);
+					saveConfig();
+					requestRender();
+					ctx.ui.notify(`neon pad: ${config.padY}`, "info");
+					return;
+				}
+				case "glyph":
+					if (!value || !(value in GLYPHS)) {
+						ctx.ui.notify(`usage: /neon glyph <${Object.keys(GLYPHS).join("|")}>`, "warning");
+						return;
+					}
+					config.glyph = value as NeonGlyph;
+					saveConfig();
+					requestRender();
+					ctx.ui.notify(`neon glyph: ${value}`, "info");
+					return;
 				case "reset":
 					config = { ...DEFAULT_CONFIG };
 					saveConfig();
@@ -446,7 +507,7 @@ export default function neonEditor(pi: ExtensionAPI) {
 					return;
 				case "status":
 					ctx.ui.notify(
-						`neon: ${config.enabled ? "on" : "off"} · preset ${config.preset} · mode ${config.mode} · speed ${config.intervalMs}ms · glow ${config.glow} · keyword ${config.keyword || "-"}`,
+						`neon: ${config.enabled ? "on" : "off"} · preset ${config.preset} · mode ${config.mode} · speed ${config.intervalMs}ms · glow ${config.glow} · thickness ${config.thickness} · pad ${config.padY} · glyph ${config.glyph} · keyword ${config.keyword || "-"}`,
 						"info",
 					);
 					return;

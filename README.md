@@ -10,6 +10,7 @@ This package replaces the default editor component with a `CustomEditor` subclas
 - Border presets: `neon`, `ocean`, `sunset`, `matrix`, `ember`, `violet`
 - Render modes: `flow`, `pulse`, `static`
 - Adjustable animation speed and glow strength
+- Adjustable border size: thickness (1-4 rows), inner padding, line glyph weight
 - Optional keyword glow, e.g. make `ultrathink` shine while typing
 - Persistent user config at `~/.pi/agent/neon-editor.json`
 - Restores the previous editor component when disabled
@@ -38,6 +39,9 @@ Then control it with:
 /neon mode pulse         Switch render mode: flow | pulse | static
 /neon speed 120          Set frame interval in ms, range 40-300
 /neon glow 70            Set glow strength, range 0-100
+/neon thickness 2        Border height in rows, range 1-4
+/neon pad 1              Blank lines between border and text, range 0-3
+/neon glyph heavy        Border line weight: light | heavy | double
 /neon keyword ultrathink Highlight a keyword while typing
 /neon keyword            Clear keyword highlight
 /neon reset              Reset config to defaults
@@ -60,7 +64,10 @@ Example:
   "mode": "flow",
   "intervalMs": 70,
   "glow": 70,
-  "keyword": ""
+  "keyword": "",
+  "thickness": 1,
+  "padY": 0,
+  "glyph": "light"
 }
 ```
 
