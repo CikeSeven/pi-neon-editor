@@ -1,19 +1,28 @@
 {
-  "name": "neon-editor",
-  "private": true,
-  "version": "0.1.0",
-  "description": "Animated flowing neon border and keyword glow for the pi input editor.",
+  "name": "pi-neon-editor",
+  "version": "1.0.0",
+  "description": "Animated flowing neon border for the pi input editor: truecolor gradient presets, render modes, reactive typing/send/done/working effects, and user-defined presets.",
   "type": "module",
   "keywords": [
     "pi-package",
     "pi-extension",
     "editor",
     "neon",
-    "tui"
+    "tui",
+    "truecolor",
+    "animation"
   ],
-  "scripts": {
-    "check": "pi -e . --version"
+  "author": "CikeSeven <llyllydyx@163.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CikeSeven/pi-neon-editor.git"
   },
+  "homepage": "https://github.com/CikeSeven/pi-neon-editor#readme",
+  "bugs": "https://github.com/CikeSeven/pi-neon-editor/issues",
+  "files": [
+    "index.ts"
+  ],
   "pi": {
     "extensions": [
       "./index.ts"

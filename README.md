@@ -1,8 +1,34 @@
-# neon-editor
+# pi-neon-editor
 
 Animated flowing neon border and optional keyword glow for the [pi](https://github.com/earendil-works/pi) input editor.
 
 This package replaces the default editor component with a `CustomEditor` subclass that re-renders the editor border as an animated truecolor gradient. It also adds an optional keyword shine while you type.
+
+## Installation
+
+From npm:
+
+```bash
+pi install npm:pi-neon-editor
+```
+
+From git:
+
+```bash
+pi install git:github.com/CikeSeven/pi-neon-editor
+```
+
+Or try it without installing:
+
+```bash
+pi -e npm:pi-neon-editor
+```
+
+Manual (development): clone or copy this repository into pi's global extension directory and `/reload`:
+
+```text
+~/.pi/agent/extensions/neon-editor/
+```
 
 ## Features
 
@@ -17,12 +43,6 @@ This package replaces the default editor component with a `CustomEditor` subclas
 - Restores the previous editor component when disabled
 
 ## Usage
-
-This repository is already placed in pi's global extension directory:
-
-```text
-~/.pi/agent/extensions/neon-editor/
-```
 
 Reload pi or restart it:
 
@@ -259,3 +279,7 @@ script -qec "pi -e ~/.pi/agent/extensions/neon-editor" /tmp/neon-editor.log
 - The glow is simulated with ANSI truecolor brightness; terminals cannot render real blur/bloom.
 - Animation works by calling `tui.requestRender()` on a timer. Lower `speed` values look smoother but redraw more often.
 - If another extension also replaces the editor component, load order matters. `/neon off` restores the editor factory that was active before neon-editor was enabled.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
