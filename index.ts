@@ -377,6 +377,131 @@ function usage(ctx: ExtensionContext): void {
 	);
 }
 
+function notifyStatus(ctx: ExtensionContext): void {
+	ctx.ui.notify(
+		`neon: ${config.enabled ? "on" : "off"} · preset ${config.preset} · mode ${config.mode} · speed ${config.intervalMs}ms · glow ${config.glow} · thickness ${config.thickness} · pad ${config.padY} · glyph ${config.glyph} · keyword ${config.keyword || "-"}`,
+		"info",
+	);
+}
+
+async function pickNumber(
+	ctx: ExtensionContext,
+	title: string,
+	current: number,
+	min: number,
+	max: number,
+	onPick: (value: number) => void,
+): Promise<void> {
+	const next = await ctx.ui.input(`${title} (${min}-${max})`, String(current));
+	if (next === undefined || next.trim() === "") return;
+	const num = Number(next);
+	if (!Number.isFinite(num)) {
+		ctx.ui.notify("invalid number", "warning");
+		return;
+	}
+	onPick(clamp(Math.round(num), min, max));
+	saveConfig();
+	requestRender();
+}
+
+async function neonMenu(ctx: ExtensionContext): Promise<void> {
+	while (true) {
+		const entries: Array<[string, string]> = [
+			["toggle", config.enabled ? "Turn off" : "Turn on"],
+			["preset", `Preset — ${config.preset}`],
+			["mode", `Mode — ${config.mode}`],
+			["speed", `Speed — ${config.intervalMs}ms`],
+			["glow", `Glow — ${config.glow}`],
+			["thickness", `Thickness — ${config.thickness}`],
+			["pad", `Pad — ${config.padY}`],
+			["glyph", `Glyph — ${config.glyph}`],
+			["keyword", `Keyword — ${config.keyword || "-"}`],
+			["reset", "Reset to defaults"],
+		];
+		const labels = entries.map(([, label]) => label);
+		const picked = await ctx.ui.select("neon-editor · enter to edit, esc to close", labels);
+		if (picked === undefined) return;
+		const action = entries[labels.indexOf(picked)]?.[0];
+
+		switch (action) {
+			case "toggle":
+				applyEditor(ctx, !config.enabled);
+				break;
+			case "preset": {
+				const next = await ctx.ui.select(`Preset (current: ${config.preset})`, Object.keys(PRESETS));
+				if (next) {
+					config.preset = next;
+					saveConfig();
+					requestRender();
+				}
+				break;
+			}
+			case "mode": {
+				const next = await ctx.ui.select(`Mode (current: ${config.mode})`, MODES);
+				if (next) {
+					config.mode = next as NeonMode;
+					saveConfig();
+					requestRender();
+				}
+				break;
+			}
+			case "speed":
+				await pickNumber(ctx, "Frame interval ms", config.intervalMs, 40, 300, (ms) => {
+					config.intervalMs = ms;
+					if (config.enabled) startTimer();
+				});
+				break;
+			case "glow":
+				await pickNumber(ctx, "Glow strength", config.glow, 0, 100, (glow) => {
+					config.glow = glow;
+				});
+				break;
+			case "thickness": {
+				const next = await ctx.ui.select(`Thickness (current: ${config.thickness})`, ["1", "2", "3", "4"]);
+				if (next) {
+					config.thickness = Number(next);
+					saveConfig();
+					requestRender();
+				}
+				break;
+			}
+			case "pad": {
+				const next = await ctx.ui.select(`Pad (current: ${config.padY})`, ["0", "1", "2", "3"]);
+				if (next) {
+					config.padY = Number(next);
+					saveConfig();
+					requestRender();
+				}
+				break;
+			}
+			case "glyph": {
+				const next = await ctx.ui.select(`Glyph (current: ${config.glyph})`, Object.keys(GLYPHS));
+				if (next) {
+					config.glyph = next as NeonGlyph;
+					saveConfig();
+					requestRender();
+				}
+				break;
+			}
+			case "keyword": {
+				const next = await ctx.ui.input("Keyword to highlight (empty clears)", config.keyword);
+				if (next !== undefined) {
+					config.keyword = next.trim();
+					saveConfig();
+					requestRender();
+				}
+				break;
+			}
+			case "reset":
+				config = { ...DEFAULT_CONFIG };
+				saveConfig();
+				applyEditor(ctx, true, false);
+				ctx.ui.notify("neon-editor reset to defaults", "info");
+				break;
+		}
+	}
+}
+
 export default function neonEditor(pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
 		state.capturedPrevious = false;
@@ -405,8 +530,14 @@ export default function neonEditor(pi: ExtensionAPI) {
 		},
 		handler: async (args, ctx) => {
 			const parts = args.trim().split(/\s+/).filter(Boolean);
-			const action = parts[0] ?? "status";
+			const action = parts[0];
 			const value = parts.slice(1).join(" ").trim();
+
+			if (!action) {
+				if (ctx.mode === "tui") await neonMenu(ctx);
+				else notifyStatus(ctx);
+				return;
+			}
 
 			switch (action) {
 				case "on":
@@ -506,10 +637,7 @@ export default function neonEditor(pi: ExtensionAPI) {
 					ctx.ui.notify("neon-editor reset to defaults", "info");
 					return;
 				case "status":
-					ctx.ui.notify(
-						`neon: ${config.enabled ? "on" : "off"} · preset ${config.preset} · mode ${config.mode} · speed ${config.intervalMs}ms · glow ${config.glow} · thickness ${config.thickness} · pad ${config.padY} · glyph ${config.glyph} · keyword ${config.keyword || "-"}`,
-						"info",
-					);
+					notifyStatus(ctx);
 					return;
 				default:
 					usage(ctx);

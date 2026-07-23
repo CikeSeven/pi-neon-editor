@@ -32,7 +32,8 @@ Reload pi or restart it:
 Then control it with:
 
 ```text
-/neon                    Show current status
+/neon                    Open the interactive settings menu (TUI mode)
+/neon status             Show current status as a notification
 /neon on                 Enable neon editor
 /neon off                Disable and restore the previous editor
 /neon preset ocean       Switch palette preset
@@ -46,6 +47,30 @@ Then control it with:
 /neon keyword            Clear keyword highlight
 /neon reset              Reset config to defaults
 ```
+
+## Interactive menu
+
+Running `/neon` with no arguments opens a settings menu built from pi's
+dialog components. Every entry shows its current value; press Enter to
+change it and Esc to close the menu:
+
+```text
+neon-editor · enter to edit, esc to close
+  Turn off
+  Preset — neon          → picker: neon / ocean / sunset / matrix / ember / violet
+  Mode — flow            → picker: flow / pulse / static
+  Speed — 70ms           → number input (40-300)
+  Glow — 70              → number input (0-100)
+  Thickness — 1          → picker: 1-4
+  Pad — 0                → picker: 0-3
+  Glyph — light          → picker: light / heavy / double
+  Keyword — -            → text input (empty clears)
+  Reset to defaults
+```
+
+Changes apply immediately and are persisted to the config file. All
+subcommands (`/neon preset ocean` etc.) remain available for scripting and
+quick edits; `/neon status` prints a one-line summary.
 
 ## Border size
 
