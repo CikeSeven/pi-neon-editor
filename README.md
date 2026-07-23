@@ -47,6 +47,47 @@ Then control it with:
 /neon reset              Reset config to defaults
 ```
 
+## Border size
+
+Terminals cannot make a single line physically taller, so "border size" is
+controlled by three independent settings:
+
+```text
+┌─ thickness ─┐  ┌─ pad ─┐
+
+───────────────  ┐
+───────────────  ┘ thickness 2: N border rows, directly adjacent
+                 ┐
+ (blank line)    ┘ pad 1: blank rows between border and text
+ your text here
+ (blank line)    ┐
+                 ┘ pad applied again above the bottom border
+───────────────  ┐
+───────────────  ┘ bottom border rows
+```
+
+| Setting | Command | Range | Default | What it controls |
+| --- | --- | --- | --- | --- |
+| `thickness` | `/neon thickness <1-4>` | 1-4 rows | 1 | Border height. The rows are rendered **directly adjacent** to each other, forming one solid thick border. There is no gap between them. |
+| `padY` | `/neon pad <0-3>` | 0-3 rows | 0 | Inner padding: blank rows inserted **between the border and the text** (like CSS padding). Applied to both top and bottom. `0` means the text touches the border rows directly. |
+| `glyph` | `/neon glyph <light\|heavy\|double>` | 3 styles | light | Line weight of the border characters: `light` = `─`, `heavy` = `━`, `double` = `═`. Purely visual; takes no extra rows. |
+
+Example — a visibly chunky, roomy frame:
+
+```text
+/neon thickness 2
+/neon pad 1
+/neon glyph heavy
+```
+
+Back to a slim single-line frame:
+
+```text
+/neon thickness 1
+/neon pad 0
+/neon glyph light
+```
+
 ## Config
 
 Runtime settings are stored in:
