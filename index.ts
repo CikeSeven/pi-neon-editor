@@ -211,14 +211,19 @@ function isBorderLine(plain: string, width: number): boolean {
 function reactiveBoost(index: number, frame: number): number {
 	let boost = 0;
 
-	// Typing ripples: an expanding, fading wave centered at the cursor column.
+	// Typing ripples: a bright core at the cursor column, then an expanding
+	// wavefront ring that travels outward along the border. Lives ~18 frames.
 	if (config.fx.typing) {
 		for (const ripple of state.ripples) {
 			const age = frame - ripple.frame;
-			if (age < 0 || age > 8) continue;
-			const radius = 6 + age * 2;
-			const wave = Math.max(0, 1 - Math.abs(index - ripple.col) / radius);
-			boost = Math.max(boost, wave * (1 - age / 9) * 0.9);
+			if (age < 0 || age > 18) continue;
+			const fade = 1 - age / 19;
+			const dist = Math.abs(index - ripple.col);
+			// Expanding ring: peak brightness sits on a wavefront moving outward.
+			const ring = Math.max(0, 1 - Math.abs(dist - age * 1.6) / 3.5);
+			// Bright core at the impact point, strong for the first few frames.
+			const core = Math.max(0, 1 - dist / (6 + age)) * Math.max(0, 1 - age / 6);
+			boost = Math.max(boost, Math.max(ring * 0.9, core) * fade);
 		}
 	}
 
@@ -355,7 +360,7 @@ class NeonEditor extends CustomEditor {
 			const cursor = this.getCursor();
 			const col = this.getPaddingX() + (cursor?.col ?? 0);
 			state.ripples.push({ col, frame: state.frame });
-			if (state.ripples.length > 8) state.ripples.shift();
+			if (state.ripples.length > 12) state.ripples.shift();
 		}
 	}
 
@@ -410,7 +415,7 @@ function startTimer(): void {
 		state.frame++;
 		// Drop expired ripples so the array stays small.
 		if (state.ripples.length > 0) {
-			state.ripples = state.ripples.filter((ripple) => state.frame - ripple.frame <= 8);
+			state.ripples = state.ripples.filter((ripple) => state.frame - ripple.frame <= 18);
 		}
 		state.tui?.requestRender();
 	}, config.intervalMs);

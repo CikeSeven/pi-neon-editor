@@ -92,7 +92,7 @@ the interactive menu (`Effects — ...` entry):
 
 | Effect | Trigger | What it looks like |
 | --- | --- | --- |
-| `typing` | Every keystroke in the editor (via the editor's `handleInput`) | A ripple wave lights up on the border at the cursor's column, expanding and fading over ~8 frames. |
+| `typing` | Every keystroke in the editor (via the editor's `handleInput`) | A bright core flashes on the border at the cursor's column, then a wavefront ring expands outward along the border, fading over ~18 frames (~1.3s at the default 70ms interval). |
 | `send` | pi's `input` event (you submit a prompt) | The whole border flashes bright once, fading over ~12 frames. |
 | `done` | pi's `agent_end` event (the agent finishes generating) | The border pulses three times, decaying over ~36 frames — a subtle "I'm done" signal. |
 
