@@ -45,6 +45,12 @@ interface NeonConfig {
 	margin: number;
 	bg: NeonBg;
 	bgColor: Rgb | null;
+	/**
+	 * Mix base for tint/gradient backgrounds. null = auto-detect the terminal's
+	 * default background via OSC 11 (falling back to black), so the panel blends
+	 * into both dark and light terminal themes. Set [r,g,b] to pin a base color.
+	 */
+	bgBase: Rgb | null;
 	bgStrength: number;
 	fx: NeonFx;
 	workingStyle: NeonWorkingStyle;
@@ -206,6 +212,7 @@ const DEFAULT_CONFIG: NeonConfig = {
 	margin: 2,
 	bg: "none",
 	bgColor: null,
+	bgBase: null,
 	bgStrength: 15,
 	fx: { typing: true, send: true, done: true, working: true },
 	workingStyle: "comet",
@@ -289,6 +296,7 @@ function normalizeConfig(input: unknown): NeonConfig {
 			Array.isArray(raw.bgColor) && raw.bgColor.length === 3 && raw.bgColor.every((v: unknown) => Number.isFinite(v))
 				? (raw.bgColor.map((v: unknown) => clamp(Math.round(Number(v)), 0, 255)) as Rgb)
 				: DEFAULT_CONFIG.bgColor,
+		bgBase: parseRgb(raw.bgBase) ?? DEFAULT_CONFIG.bgBase,
 		bgStrength: clamp(Math.round(Number(raw.bgStrength) || DEFAULT_CONFIG.bgStrength), 5, 60),
 		workingStyle: WORKING_STYLES.includes(raw.workingStyle as NeonWorkingStyle)
 			? (raw.workingStyle as NeonWorkingStyle)
@@ -335,6 +343,10 @@ const state = {
 	sendFlash: -1,
 	donePulse: -1,
 	working: false,
+	/** Terminal background detected via OSC 11; null until the query succeeds. */
+	detectedBg: null as Rgb | null,
+	/** Guard so the OSC 11 background query runs at most once per session. */
+	bgQueryStarted: false,
 	/** Timestamp of the last keystroke routed through the editor. */
 	lastInputAt: 0,
 };
@@ -367,6 +379,48 @@ function palette(): Rgb[] {
 
 function accent(): Rgb {
 	return (allPresets()[config.preset] ?? PRESETS.neon!).accent;
+}
+
+/** Mix base for tint/gradient backgrounds: explicit config, else the detected terminal background, else black. */
+function bgBase(): Rgb {
+	return config.bgBase ?? state.detectedBg ?? [0, 0, 0];
+}
+
+function bgBaseLabel(): string {
+	if (config.bgBase) return config.bgBase.join(",");
+	return state.detectedBg ? `auto ${state.detectedBg.join(",")}` : "auto (black)";
+}
+
+/** Parse "r,g,b" or "r g b" command input; out-of-range components are clamped. */
+function parseRgbList(value: string): Rgb | undefined {
+	const parts = value.split(/[\s,]+/).filter(Boolean).map(Number);
+	if (parts.length !== 3 || parts.some((n) => !Number.isFinite(n))) return undefined;
+	return [clamp(Math.round(parts[0]!), 0, 255), clamp(Math.round(parts[1]!), 0, 255), clamp(Math.round(parts[2]!), 0, 255)];
+}
+
+/**
+ * Ask the terminal for its default background color (OSC 11) to use as the
+ * tint/gradient mix base, so the background panel blends into light terminal
+ * themes instead of showing up as a black slab. No-answer terminals (timeout)
+ * simply keep the black fallback. Runs at most once per session.
+ */
+function detectTerminalBg(): void {
+	if (state.bgQueryStarted || !state.tui) return;
+	const tui = state.tui;
+	// Older pi-tui versions lack the query API; keep the black base there.
+	if (typeof tui.queryTerminalBackgroundColor !== "function") return;
+	state.bgQueryStarted = true;
+	tui
+		.queryTerminalBackgroundColor({ timeoutMs: 150 })
+		.then((rgb) => {
+			if (rgb) {
+				state.detectedBg = [rgb.r, rgb.g, rgb.b];
+				if (config.enabled && config.bg !== "none") requestRender();
+			}
+		})
+		.catch(() => {
+			// Detection is best-effort; the black fallback stays in effect.
+		});
 }
 
 function isBorderLine(plain: string, width: number): boolean {
@@ -584,14 +638,16 @@ const BG_RESET = "\x1b[49m";
 function applyBackground(line: string, width: number): string {
 	if (config.bg === "none") return line;
 	const s = config.bgStrength / 100;
+	const base = bgBase();
 	const solid = config.bg === "solid" && config.bgColor ? config.bgColor : null;
-	const tint = config.bg === "tint" || (config.bg === "solid" && !solid) ? mix([0, 0, 0], accent(), s) : null;
+	const tint = config.bg === "tint" || (config.bg === "solid" && !solid) ? mix(base, accent(), s) : null;
 	const bgFor = (col: number): string => {
 		if (solid) return bgCode(solid);
 		if (tint) return bgCode(tint);
-		// Gradient: a dark, slowly flowing copy of the border gradient. It uses
-		// colorAt, so ripples/flashes shimmer through the backdrop too.
-		return bgCode(mix([0, 0, 0], colorAt(col, width, state.frame), s));
+		// Gradient: a dark, slowly flowing copy of the border gradient, mixed
+		// from the terminal's background color. It uses colorAt, so ripples and
+		// flashes shimmer through the backdrop too.
+		return bgCode(mix(base, colorAt(col, width, state.frame), s));
 	};
 
 	const tokens = tokenizeLine(line);
@@ -693,6 +749,9 @@ class NeonEditor extends CustomEditor {
 	constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) {
 		super(tui, theme, keybindings);
 		state.tui = tui;
+		// Kick off terminal background detection (once per session); the result
+		// becomes the tint/gradient mix base so panels blend into light themes.
+		detectTerminalBg();
 	}
 
 	/**
@@ -883,7 +942,7 @@ function applyEditor(ctx: ExtensionContext, enabled: boolean, notifyUser = true)
 
 function usage(ctx: ExtensionContext): void {
 	ctx.ui.notify(
-		"usage: /neon [on|off|status|preset <name>|mode <flow|pulse|static|swing>|working <comet|surge>|speed <40-300>|glow <0-100>|thickness <1-4>|pad <0-3>|glyph <light|heavy|double|dashed|dotted|mixed>|frame <on|off>|margin <1-4>|caps <none|block|diamond|angle>|bg <none|tint|solid|gradient>|bgboost <5-60>|typingpause <0-5000>|fx <typing|send|done|working> <on|off>|keyword [word]|reset]",
+		"usage: /neon [on|off|status|preset <name>|mode <flow|pulse|static|swing>|working <comet|surge>|speed <40-300>|glow <0-100>|thickness <1-4>|pad <0-3>|glyph <light|heavy|double|dashed|dotted|mixed>|frame <on|off>|margin <1-4>|caps <none|block|diamond|angle>|bg <none|tint|solid|gradient>|bgboost <5-60>|bgbase <r,g,b|auto>|typingpause <0-5000>|fx <typing|send|done|working> <on|off>|keyword [word]|reset]",
 		"warning",
 	);
 }
@@ -899,7 +958,7 @@ function fxLabel(): string {
 
 function notifyStatus(ctx: ExtensionContext): void {
 	ctx.ui.notify(
-		`neon: ${config.enabled ? "on" : "off"} · preset ${config.preset} · mode ${config.mode} · speed ${config.intervalMs}ms · glow ${config.glow} · thickness ${config.thickness} · pad ${config.padY} · glyph ${config.glyph} · frame ${config.frame ? `on/${config.margin}` : "off"} · caps ${config.caps} · bg ${config.bg} · fx ${fxLabel()} · working-style ${config.workingStyle} · typing-pause ${config.typingPauseMs}ms · keyword ${config.keyword || "-"}`,
+		`neon: ${config.enabled ? "on" : "off"} · preset ${config.preset} · mode ${config.mode} · speed ${config.intervalMs}ms · glow ${config.glow} · thickness ${config.thickness} · pad ${config.padY} · glyph ${config.glyph} · frame ${config.frame ? `on/${config.margin}` : "off"} · caps ${config.caps} · bg ${config.bg}/${config.bgStrength}% · bgbase ${bgBaseLabel()} · fx ${fxLabel()} · working-style ${config.workingStyle} · typing-pause ${config.typingPauseMs}ms · keyword ${config.keyword || "-"}`,
 		"info",
 	);
 }
@@ -940,6 +999,7 @@ async function neonMenu(ctx: ExtensionContext): Promise<void> {
 			["caps", `End caps — ${config.caps}`],
 			["bg", `Background — ${config.bg}${config.bg === "none" ? "" : ` (${config.bgStrength}%)`}`],
 			["bgboost", `Background strength — ${config.bgStrength}%`],
+			["bgbase", `Background base — ${bgBaseLabel()}`],
 			["keyword", `Keyword — ${config.keyword || "-"}`],
 			["fx", `Effects — ${fxLabel()}`],
 			["workingStyle", `Working style — ${config.workingStyle}`],
@@ -1057,6 +1117,30 @@ async function neonMenu(ctx: ExtensionContext): Promise<void> {
 				}
 				break;
 			}
+			case "bgbase": {
+				const next = await ctx.ui.input(
+					"Background base r,g,b (empty = auto-detect terminal)",
+					config.bgBase ? config.bgBase.join(",") : "",
+				);
+				if (next === undefined) break;
+				const trimmed = next.trim();
+				if (trimmed === "" || trimmed.toLowerCase() === "auto") {
+					config.bgBase = null;
+					// Retry detection in case the first OSC 11 query timed out.
+					state.bgQueryStarted = false;
+					detectTerminalBg();
+				} else {
+					const rgb = parseRgbList(trimmed);
+					if (!rgb) {
+						ctx.ui.notify("background base must be r,g,b (0-255) or empty for auto", "warning");
+						break;
+					}
+					config.bgBase = rgb;
+				}
+				saveConfig();
+				requestRender();
+				break;
+			}
 			case "keyword": {
 				const next = await ctx.ui.input("Keyword to highlight (empty clears)", config.keyword);
 				if (next !== undefined) {
@@ -1121,6 +1205,8 @@ export default function neonEditor(pi: ExtensionAPI) {
 		state.donePulse = -1;
 		state.working = false;
 		state.lastInputAt = 0;
+		state.detectedBg = null;
+		state.bgQueryStarted = false;
 		config = loadConfig();
 
 		if (ctx.mode === "tui" && config.enabled) {
@@ -1139,6 +1225,8 @@ export default function neonEditor(pi: ExtensionAPI) {
 		state.donePulse = -1;
 		state.working = false;
 		state.lastInputAt = 0;
+		state.detectedBg = null;
+		state.bgQueryStarted = false;
 	});
 
 	// Reactive effects: flash the border when the user submits input,
@@ -1163,7 +1251,7 @@ export default function neonEditor(pi: ExtensionAPI) {
 	pi.registerCommand("neon", {
 		description: "Control the neon-editor input border animation",
 		getArgumentCompletions: (prefix) => {
-			const words = ["on", "off", "status", "preset", "mode", "working", "speed", "glow", "keyword", "thickness", "pad", "glyph", "frame", "margin", "caps", "bg", "bgboost", "typingpause", "fx", "reset"];
+			const words = ["on", "off", "status", "preset", "mode", "working", "speed", "glow", "keyword", "thickness", "pad", "glyph", "frame", "margin", "caps", "bg", "bgboost", "bgbase", "typingpause", "fx", "reset"];
 			const filtered = words.filter((word) => word.startsWith(prefix));
 			return filtered.length > 0 ? filtered.map((word) => ({ value: word, label: word })) : null;
 		},
@@ -1289,6 +1377,28 @@ export default function neonEditor(pi: ExtensionAPI) {
 					saveConfig();
 					requestRender();
 					ctx.ui.notify(`neon background strength: ${boost}`, "info");
+					return;
+				}
+				case "bgbase": {
+					if (!value || value.toLowerCase() === "auto") {
+						config.bgBase = null;
+						// Retry detection in case the first OSC 11 query timed out.
+						state.bgQueryStarted = false;
+						detectTerminalBg();
+						saveConfig();
+						requestRender();
+						ctx.ui.notify(`neon background base: auto (${bgBaseLabel()})`, "info");
+						return;
+					}
+					const rgb = parseRgbList(value);
+					if (!rgb) {
+						ctx.ui.notify("usage: /neon bgbase <r,g,b|auto>", "warning");
+						return;
+					}
+					config.bgBase = rgb;
+					saveConfig();
+					requestRender();
+					ctx.ui.notify(`neon background base: ${rgb.join(",")}`, "info");
 					return;
 				}
 				case "fx": {

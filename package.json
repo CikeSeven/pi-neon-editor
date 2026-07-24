@@ -1,6 +1,6 @@
 {
   "name": "pi-neon-editor",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Animated flowing neon border for the pi input editor: truecolor gradient presets, render modes, reactive typing/send/done/working effects, and user-defined presets.",
   "type": "module",
   "keywords": [

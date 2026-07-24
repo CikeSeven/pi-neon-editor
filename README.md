@@ -73,6 +73,7 @@ Then control it with:
 /neon caps block         End caps on the horizontal borders: none | block | diamond | angle
 /neon bg gradient        Background: none | tint | solid | gradient
 /neon bgboost 20         Background brightness, range 5-60 (tint/gradient)
+/neon bgbase 250,250,252 Background mix base: r,g,b | auto (auto-detects the terminal background)
 /neon fx send off        Toggle a reactive effect: typing | send | done | working
 /neon typingpause 800    Freeze the border while typing (IME anti-flicker), range 0-5000, 0 = off
 /neon keyword ultrathink Highlight a keyword while typing
@@ -156,15 +157,33 @@ the frame is **off** (frame corners take precedence when it is on):
 the autocomplete dropdown is left alone):
 
 - `none` — default terminal background
-- `tint` — a dark tint of the current preset's accent color
-- `gradient` — a dark copy of the border gradient flowing across the box;
+- `tint` — a soft tint of the current preset's accent color
+- `gradient` — a muted copy of the border gradient flowing across the box;
   typing ripples and send/done flashes shimmer through the backdrop
 - `solid` — a fixed custom color from `"bgColor": [r, g, b]` in the config
   file (falls back to `tint` when unset)
 
-`/neon bgboost <5-60>` scales the brightness of `tint`/`gradient` (default 15%).
+`/neon bgboost <5-60>` scales the strength of `tint`/`gradient` (default 15%).
 The painter preserves the editor's own styling: cursor and selection keep
 their inverse/highlight rendering on top of the background.
+
+### Background base color
+
+`tint`/`gradient` colors are mixed from a base color towards the preset
+colors. By default the base is **auto-detected from the terminal's real
+background** (an OSC 11 query at session start), so the panel blends into
+both dark and light terminal themes — on a light terminal the panel is a
+light tint, not a black slab. Terminals that don't answer the query fall
+back to a black base (the pre-1.4 behavior).
+
+Pin an explicit base with `/neon bgbase <r,g,b>` (or `"bgBase": [r, g, b]`
+in the config file); `/neon bgbase auto` restores auto-detection.
+
+**Terminal background images / transparency:** OSC 11 reports only the color
+scheme's solid background color — never the image — and SGR backgrounds have
+no alpha channel, so any painted `bg` mode covers the wallpaper with an
+opaque panel. Use `bg none` to keep background images and acrylic
+transparency visible inside the box.
 
 ## Custom presets
 
@@ -318,6 +337,7 @@ Example:
   "margin": 2,
   "bg": "none",
   "bgColor": null,
+  "bgBase": null,
   "bgStrength": 15,
   "fx": { "typing": true, "send": true, "done": true, "working": true },
   "workingStyle": "comet",
