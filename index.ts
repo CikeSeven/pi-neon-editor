@@ -48,6 +48,15 @@ interface NeonConfig {
 	bgStrength: number;
 	fx: NeonFx;
 	workingStyle: NeonWorkingStyle;
+	/**
+	 * Typing quiet window in ms: while the user is typing (and for this long
+	 * after the last keystroke), the animation timer skips repaints. Every
+	 * repaint rewrites the whole editor block (both borders change every frame,
+	 * so the diff range spans all text rows), which races the terminal's IME
+	 * composition rendering — on Windows Terminal the composition text drawn
+	 * over the grid flickers. 0 disables the guard (animation always runs).
+	 */
+	typingPauseMs: number;
 	/** User-defined presets from the config file; merged over the built-ins. */
 	presets: Record<string, Preset>;
 }
@@ -200,6 +209,7 @@ const DEFAULT_CONFIG: NeonConfig = {
 	bgStrength: 15,
 	fx: { typing: true, send: true, done: true, working: true },
 	workingStyle: "comet",
+	typingPauseMs: 0,
 	presets: {},
 };
 
@@ -283,6 +293,7 @@ function normalizeConfig(input: unknown): NeonConfig {
 		workingStyle: WORKING_STYLES.includes(raw.workingStyle as NeonWorkingStyle)
 			? (raw.workingStyle as NeonWorkingStyle)
 			: DEFAULT_CONFIG.workingStyle,
+		typingPauseMs: clampNumber(raw.typingPauseMs, 0, 5000, DEFAULT_CONFIG.typingPauseMs),
 		fx: {
 			typing: typeof raw.fx?.typing === "boolean" ? raw.fx.typing : DEFAULT_CONFIG.fx.typing,
 			send: typeof raw.fx?.send === "boolean" ? raw.fx.send : DEFAULT_CONFIG.fx.send,
@@ -324,6 +335,8 @@ const state = {
 	sendFlash: -1,
 	donePulse: -1,
 	working: false,
+	/** Timestamp of the last keystroke routed through the editor. */
+	lastInputAt: 0,
 };
 
 function stripSgr(value: string): string {
@@ -705,6 +718,10 @@ class NeonEditor extends CustomEditor {
 
 	override handleInput(data: string): void {
 		super.handleInput(data);
+		// Track input activity for the typing-quiet paint guard. This also
+		// fires for IME commits (they arrive as text input), which is exactly
+		// when the composition layer is most likely on screen.
+		state.lastInputAt = Date.now();
 		if (config.enabled && config.fx.typing && state.tui && this.lastRenderWidth > 0) {
 			// Map the cursor onto border coordinates: padding + visual column.
 			state.ripples.push({ col: this.visualCursorCol(this.lastRenderWidth), frame: state.frame });
@@ -803,6 +820,13 @@ function startTimer(): void {
 		if (state.ripples.length > 0) {
 			state.ripples = state.ripples.filter((ripple) => state.frame - ripple.frame <= 18);
 		}
+		// Typing-quiet guard: don't repaint while the user is (or was very
+		// recently) typing. Both borders change every frame, so each repaint
+		// rewrites the entire editor block and races the terminal's IME
+		// composition overlay (visible as flicker on Windows Terminal). The
+		// editor's own input path repaints typed text independently, so the
+		// only thing frozen here is the border animation.
+		if (config.typingPauseMs > 0 && Date.now() - state.lastInputAt < config.typingPauseMs) return;
 		state.tui?.requestRender();
 	}, config.intervalMs);
 }
@@ -859,7 +883,7 @@ function applyEditor(ctx: ExtensionContext, enabled: boolean, notifyUser = true)
 
 function usage(ctx: ExtensionContext): void {
 	ctx.ui.notify(
-		"usage: /neon [on|off|status|preset <name>|mode <flow|pulse|static|swing>|working <comet|surge>|speed <40-300>|glow <0-100>|thickness <1-4>|pad <0-3>|glyph <light|heavy|double|dashed|dotted|mixed>|frame <on|off>|margin <1-4>|caps <none|block|diamond|angle>|bg <none|tint|solid|gradient>|bgboost <5-60>|fx <typing|send|done|working> <on|off>|keyword [word]|reset]",
+		"usage: /neon [on|off|status|preset <name>|mode <flow|pulse|static|swing>|working <comet|surge>|speed <40-300>|glow <0-100>|thickness <1-4>|pad <0-3>|glyph <light|heavy|double|dashed|dotted|mixed>|frame <on|off>|margin <1-4>|caps <none|block|diamond|angle>|bg <none|tint|solid|gradient>|bgboost <5-60>|typingpause <0-5000>|fx <typing|send|done|working> <on|off>|keyword [word]|reset]",
 		"warning",
 	);
 }
@@ -875,7 +899,7 @@ function fxLabel(): string {
 
 function notifyStatus(ctx: ExtensionContext): void {
 	ctx.ui.notify(
-		`neon: ${config.enabled ? "on" : "off"} · preset ${config.preset} · mode ${config.mode} · speed ${config.intervalMs}ms · glow ${config.glow} · thickness ${config.thickness} · pad ${config.padY} · glyph ${config.glyph} · frame ${config.frame ? `on/${config.margin}` : "off"} · caps ${config.caps} · bg ${config.bg} · fx ${fxLabel()} · working-style ${config.workingStyle} · keyword ${config.keyword || "-"}`,
+		`neon: ${config.enabled ? "on" : "off"} · preset ${config.preset} · mode ${config.mode} · speed ${config.intervalMs}ms · glow ${config.glow} · thickness ${config.thickness} · pad ${config.padY} · glyph ${config.glyph} · frame ${config.frame ? `on/${config.margin}` : "off"} · caps ${config.caps} · bg ${config.bg} · fx ${fxLabel()} · working-style ${config.workingStyle} · typing-pause ${config.typingPauseMs}ms · keyword ${config.keyword || "-"}`,
 		"info",
 	);
 }
@@ -919,6 +943,7 @@ async function neonMenu(ctx: ExtensionContext): Promise<void> {
 			["keyword", `Keyword — ${config.keyword || "-"}`],
 			["fx", `Effects — ${fxLabel()}`],
 			["workingStyle", `Working style — ${config.workingStyle}`],
+			["typingPause", `Typing pause (IME guard) — ${config.typingPauseMs === 0 ? "off" : `${config.typingPauseMs}ms`}`],
 			["reset", "Reset to defaults"],
 		];
 		const labels = entries.map(([, label]) => label);
@@ -1062,14 +1087,18 @@ async function neonMenu(ctx: ExtensionContext): Promise<void> {
 				}
 				break;
 			}
+			case "typingPause":
+				await pickNumber(ctx, "Typing quiet window ms (0 = off)", config.typingPauseMs, 0, 5000, (ms) => {
+					config.typingPauseMs = ms;
+				});
+				break;
 			case "reset":
 				config = freshDefaults();
 				saveConfig();
 				applyEditor(ctx, true, false);
 				ctx.ui.notify("neon-editor reset to defaults", "info");
 				break;
-			case "workingStyle": {
-				const next = await ctx.ui.select(`Working style (current: ${config.workingStyle})`, WORKING_STYLES);
+			case "workingStyle": {				const next = await ctx.ui.select(`Working style (current: ${config.workingStyle})`, WORKING_STYLES);
 				if (next) {
 					config.workingStyle = next as NeonWorkingStyle;
 					saveConfig();
@@ -1091,6 +1120,7 @@ export default function neonEditor(pi: ExtensionAPI) {
 		state.sendFlash = -1;
 		state.donePulse = -1;
 		state.working = false;
+		state.lastInputAt = 0;
 		config = loadConfig();
 
 		if (ctx.mode === "tui" && config.enabled) {
@@ -1108,6 +1138,7 @@ export default function neonEditor(pi: ExtensionAPI) {
 		state.sendFlash = -1;
 		state.donePulse = -1;
 		state.working = false;
+		state.lastInputAt = 0;
 	});
 
 	// Reactive effects: flash the border when the user submits input,
@@ -1132,7 +1163,7 @@ export default function neonEditor(pi: ExtensionAPI) {
 	pi.registerCommand("neon", {
 		description: "Control the neon-editor input border animation",
 		getArgumentCompletions: (prefix) => {
-			const words = ["on", "off", "status", "preset", "mode", "working", "speed", "glow", "keyword", "thickness", "pad", "glyph", "frame", "margin", "caps", "bg", "bgboost", "fx", "reset"];
+			const words = ["on", "off", "status", "preset", "mode", "working", "speed", "glow", "keyword", "thickness", "pad", "glyph", "frame", "margin", "caps", "bg", "bgboost", "typingpause", "fx", "reset"];
 			const filtered = words.filter((word) => word.startsWith(prefix));
 			return filtered.length > 0 ? filtered.map((word) => ({ value: word, label: word })) : null;
 		},
@@ -1316,6 +1347,17 @@ export default function neonEditor(pi: ExtensionAPI) {
 					requestRender();
 					ctx.ui.notify(`neon glyph: ${value}`, "info");
 					return;
+				case "typingpause": {
+					const ms = Number(value);
+					if (!Number.isFinite(ms)) {
+						ctx.ui.notify("usage: /neon typingpause <0-5000>  (0 = off; freezes the border while you type to avoid IME composition flicker)", "warning");
+						return;
+					}
+					config.typingPauseMs = clamp(Math.round(ms), 0, 5000);
+					saveConfig();
+					ctx.ui.notify(config.typingPauseMs === 0 ? "neon typing pause: off" : `neon typing pause: ${config.typingPauseMs}ms`, "info");
+					return;
+				}
 				case "reset":
 					config = freshDefaults();
 					saveConfig();

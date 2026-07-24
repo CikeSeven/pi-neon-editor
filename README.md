@@ -74,6 +74,7 @@ Then control it with:
 /neon bg gradient        Background: none | tint | solid | gradient
 /neon bgboost 20         Background brightness, range 5-60 (tint/gradient)
 /neon fx send off        Toggle a reactive effect: typing | send | done | working
+/neon typingpause 800    Freeze the border while typing (IME anti-flicker), range 0-5000, 0 = off
 /neon keyword ultrathink Highlight a keyword while typing
 /neon keyword            Clear keyword highlight
 /neon reset              Reset config to defaults
@@ -208,6 +209,24 @@ Rules:
 | `static` | Frozen gradient with a fixed glow highlight at the center. No motion. |
 | `swing` | The glow highlight oscillates left-right between the two ends (triangle wave), and the gradient phase ping-pongs with it. |
 
+## IME composition flicker (Windows Terminal)
+
+Both borders animate every frame, and pi's line differ repaints the whole
+contiguous range between the first and last changed line — so the editor's
+text rows are rewritten on every animation frame even when their content is
+unchanged. Terminals that draw the IME composition string inline over the
+grid (notably Windows Terminal) repaint that composition on each rewrite,
+which shows up as the composition letters flickering while you type with an
+IME (e.g. Chinese pinyin input).
+
+`/neon typingpause <ms>` mitigates this: after any keystroke, the animation
+timer stops requesting repaints until you have been idle for `<ms>`
+milliseconds. Typed text still updates instantly (pi repaints real input
+edits itself); only the border animation freezes while you are composing,
+then resumes when you pause. Recommended: `800`. Set `0` (default) to keep
+the animation always running. Note the trade-off: the typing ripple effect
+needs per-keystroke repaints, so it stays hidden while the guard is active.
+
 ## Reactive effects
 
 The border reacts to what is happening in the session. Each effect can be
@@ -302,6 +321,7 @@ Example:
   "bgStrength": 15,
   "fx": { "typing": true, "send": true, "done": true, "working": true },
   "workingStyle": "comet",
+  "typingPauseMs": 0,
   "presets": {}
 }
 ```
