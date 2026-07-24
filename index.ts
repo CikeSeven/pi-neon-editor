@@ -256,7 +256,10 @@ function normalizeConfig(input: unknown): NeonConfig {
 	}
 
 	const presetNames = { ...PRESETS, ...presets };
-	const preset = typeof raw.preset === "string" && raw.preset in presetNames ? raw.preset : DEFAULT_CONFIG.preset;
+	// Preset keys are lowercase (custom names are lowercased on load), so
+	// match the configured name case-insensitively.
+	const presetName = typeof raw.preset === "string" ? raw.preset.toLowerCase() : DEFAULT_CONFIG.preset;
+	const preset = presetName in presetNames ? presetName : DEFAULT_CONFIG.preset;
 
 	return {
 		enabled: typeof raw.enabled === "boolean" ? raw.enabled : DEFAULT_CONFIG.enabled,
@@ -315,6 +318,8 @@ const state = {
 	tui: undefined as TUI | undefined,
 	previousFactory: undefined as EditorFactory | undefined,
 	capturedPrevious: false,
+	/** True while our editor factory is the installed one. */
+	applied: false,
 	ripples: [] as Array<{ col: number; frame: number }>,
 	sendFlash: -1,
 	donePulse: -1,
@@ -352,8 +357,10 @@ function accent(): Rgb {
 }
 
 function isBorderLine(plain: string, width: number): boolean {
-	// Editor borders are full-width lines made from ─ plus optional scroll hints.
-	return visibleWidth(plain) === width && /─{3,}/.test(plain) && /^[─\s↑↓0-9more]+$/.test(plain);
+	// Editor borders are full-width lines of ─, optionally carrying one scroll
+	// hint ("─── ↑ 3 more ───"). Match the hint shape explicitly so a full-width
+	// line of user text made of dashes/spaces is never mistaken for a border.
+	return visibleWidth(plain) === width && (/^─+$/.test(plain) || /^─{3,}\s[↑↓]\s\d+\smore\s─*$/.test(plain));
 }
 
 function reactiveBoost(index: number, width: number, frame: number): number {
@@ -457,7 +464,7 @@ function colorAt(index: number, width: number, frame: number): Rgb {
 	return mix(color, accent(), boost);
 }
 
-function renderBorder(plain: string, width: number, edge: "top" | "bottom"): string {
+function renderBorder(plain: string, width: number, edge: "top" | "bottom", corners: boolean): string {
 	let out = "";
 	const chars = [...plain];
 	const set = GLYPHS[config.glyph] ?? GLYPHS.light;
@@ -470,9 +477,13 @@ function renderBorder(plain: string, width: number, edge: "top" | "bottom"): str
 		}
 		let glyph = set.h[i % set.h.length]!;
 		if (config.frame) {
-			// Full frame: corners replace the first/last border characters.
-			if (i === 0) glyph = edge === "top" ? set.tl : set.bl;
-			else if (i === chars.length - 1) glyph = edge === "top" ? set.tr : set.br;
+			// Full frame: corners replace the first/last border characters, but
+			// only on the band row adjacent to the content — multi-row (thick)
+			// borders would otherwise stack duplicate corners.
+			if (corners) {
+				if (i === 0) glyph = edge === "top" ? set.tl : set.bl;
+				else if (i === chars.length - 1) glyph = edge === "top" ? set.tr : set.br;
+			}
 		} else if (config.caps !== "none" && (i === 0 || i === chars.length - 1)) {
 			glyph = capChar(config.caps, edge, i === 0 ? "left" : "right");
 		}
@@ -492,18 +503,57 @@ function sideDecor(width: number, row: number): { left: string; right: string } 
 	return { left, right };
 }
 
+/**
+ * Iterate the effective codes of an SGR (CSI ... m) sequence, skipping the
+ * argument payloads of extended colors (38/48/58) so a color component like
+ * "48" inside an fg sequence is never misread as a standalone bg code.
+ */
+function scanSgrCodes(tok: string, fn: (n: number) => void): void {
+	const parts = tok.slice(2, -1).split(";");
+	for (let i = 0; i < parts.length; i++) {
+		const n = Number(parts[i]);
+		fn(n);
+		if (n === 38 || n === 48 || n === 58) {
+			const mode = Number(parts[i + 1]);
+			i += mode === 2 ? 4 : mode === 5 ? 2 : 0;
+		}
+	}
+}
+
 /** Replace the first/last visible column of a full-width line with side glyphs. */
 function wrapSides(line: string, width: number, row: number): string {
 	if (visibleWidth(line) !== width) return line;
 	const tokens = tokenizeLine(line);
 	const visible: number[] = [];
+	const inverse = new Set<number>();
+	let inverted = false;
 	for (let i = 0; i < tokens.length; i++) {
-		if (!isEscapeToken(tokens[i]!)) visible.push(i);
+		const tok = tokens[i]!;
+		if (isEscapeToken(tok)) {
+			// Track inverse-video state (SGR 7/27/0) so the editor's cursor cell
+			// is never mistaken for a replaceable edge column.
+			if (tok.startsWith("\x1b[") && tok.endsWith("m")) {
+				scanSgrCodes(tok, (n) => {
+					if (n === 7) inverted = true;
+					else if (n === 0 || n === 27) inverted = false;
+				});
+			}
+			continue;
+		}
+		if (inverted) inverse.add(i);
+		visible.push(i);
 	}
 	if (visible.length < 2) return line;
+	const first = visible[0]!;
+	const last = visible[visible.length - 1]!;
+	// Never replace the inverse-video cursor cell (it would destroy the
+	// cursor), and only swap single-cell characters so the line width and
+	// right-edge alignment survive (wide CJK/emoji would shrink the line).
+	if (inverse.has(first) || inverse.has(last)) return line;
+	if (visibleWidth(tokens[first]!) !== 1 || visibleWidth(tokens[last]!) !== 1) return line;
 	const { left, right } = sideDecor(width, row);
-	tokens[visible[0]!] = left;
-	tokens[visible[visible.length - 1]!] = right;
+	tokens[first] = left;
+	tokens[last] = right;
 	return tokens.join("");
 }
 
@@ -539,28 +589,19 @@ function applyBackground(line: string, width: number): string {
 		if (isEscapeToken(tok)) {
 			// Only SGR (CSI ... m) affects the inner-bg state; OSC/APC pass through.
 			if (tok.startsWith("\x1b[") && tok.endsWith("m")) {
-				// Parse SGR codes properly (38/48 consume their color arguments) so a
-				// color component like "48" inside an fg sequence isn't misread as a bg.
-				const parts = tok.slice(2, -1).split(";");
-				for (let i = 0; i < parts.length; i++) {
-					const n = Number(parts[i]);
-					if (n === 38 || n === 48) {
-						if (n === 48) innerBg = true;
-						const mode = Number(parts[i + 1]);
-						i += mode === 2 ? 4 : mode === 5 ? 2 : 0;
-						continue;
-					}
-					if (n === 0 || n === 27 || n === 49) innerBg = false;
+				scanSgrCodes(tok, (n) => {
+					if (n === 48) innerBg = true;
+					else if (n === 0 || n === 27 || n === 49) innerBg = false;
 					else if (n === 7) innerBg = true;
-				}
-				out += tok;
-				continue;
+				});
 			}
 			out += tok;
 			continue;
 		}
 		out += innerBg ? tok : bgFor(col) + tok;
-		col++;
+		// Advance by display cells, not code points, so wide glyphs (CJK,
+		// emoji) don't skew the gradient backdrop position.
+		col += visibleWidth(tok);
 	}
 	return `${out}${BG_RESET}`;
 }
@@ -576,10 +617,26 @@ function escapeRegExp(value: string): string {
 }
 
 function mapPlainSegments(line: string, fn: (segment: string) => string): string {
+	// tokenizeLine yields ONE code point per visible token — group adjacent
+	// visible tokens into whole text runs first, or fn would see single
+	// characters and multi-character keywords could never match.
 	let out = "";
+	let segment = "";
+	const flush = () => {
+		if (segment) {
+			out += fn(segment);
+			segment = "";
+		}
+	};
 	for (const token of tokenizeLine(line)) {
-		out += isEscapeToken(token) ? token : fn(token);
+		if (isEscapeToken(token)) {
+			flush();
+			out += token;
+		} else {
+			segment += token;
+		}
 	}
+	flush();
 	return out;
 }
 
@@ -615,32 +672,60 @@ function markNeonFactory(factory: EditorFactory): EditorFactory {
 class NeonEditor extends CustomEditor {
 	/** True when we auto-raised paddingX for frame mode (so we can restore it). */
 	private autoPad = false;
+	/** paddingX captured before frame mode raised it; restored when frame turns off. */
+	private savedPad: number | null = null;
+	/** Width of the last render pass, used to map the cursor for typing ripples. */
+	private lastRenderWidth = 0;
 
 	constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) {
 		super(tui, theme, keybindings);
 		state.tui = tui;
 	}
 
+	/**
+	 * Map the logical cursor position onto the visual column it occupies on
+	 * screen. getCursor() reports a code-unit offset inside its LOGICAL line,
+	 * while the editor word-wraps every logical line independently at
+	 * layoutWidth — so the raw col is wrong (and often off-screen) for wrapped
+	 * or later lines. The visual column is the cursor's offset inside its
+	 * current wrapped chunk; a modulo of the pre-cursor width approximates it
+	 * (word-boundary wraps can shift it by a few columns).
+	 */
+	private visualCursorCol(width: number): number {
+		const maxPadding = Math.max(0, Math.floor((width - 1) / 2));
+		const paddingX = Math.min(this.getPaddingX(), maxPadding);
+		const contentWidth = Math.max(1, width - paddingX * 2);
+		const layoutWidth = Math.max(1, contentWidth - (paddingX ? 0 : 1));
+		const cursor = this.getCursor();
+		if (!cursor) return paddingX;
+		const logical = this.getLines()[cursor.line] ?? "";
+		const before = logical.slice(0, clamp(cursor.col, 0, logical.length));
+		return paddingX + (visibleWidth(before) % layoutWidth);
+	}
+
 	override handleInput(data: string): void {
 		super.handleInput(data);
-		if (config.enabled && config.fx.typing && state.tui) {
-			// Map the cursor onto border coordinates: paddingX + visual column.
-			const cursor = this.getCursor();
-			const col = this.getPaddingX() + (cursor?.col ?? 0);
-			state.ripples.push({ col, frame: state.frame });
+		if (config.enabled && config.fx.typing && state.tui && this.lastRenderWidth > 0) {
+			// Map the cursor onto border coordinates: padding + visual column.
+			state.ripples.push({ col: this.visualCursorCol(this.lastRenderWidth), frame: state.frame });
 			if (state.ripples.length > 12) state.ripples.shift();
 		}
 	}
 
 	override render(width: number): string[] {
+		this.lastRenderWidth = width;
 		// Frame mode needs a horizontal margin so text never touches the sides.
 		// Adjust BEFORE super.render so this frame's layout is already correct.
 		const wantPad = Math.max(1, config.margin);
 		if (config.enabled && config.frame && this.getPaddingX() !== wantPad) {
+			// Only capture the pre-frame padding once; margin changes while frame
+			// stays on must not overwrite it with our own auto value.
+			if (!this.autoPad) this.savedPad = this.getPaddingX();
 			this.setPaddingX(wantPad);
 			this.autoPad = true;
 		} else if (this.autoPad && (!config.enabled || !config.frame)) {
-			this.setPaddingX(0);
+			this.setPaddingX(this.savedPad ?? 0);
+			this.savedPad = null;
 			this.autoPad = false;
 		}
 
@@ -661,7 +746,11 @@ class NeonEditor extends CustomEditor {
 				config.frame ? sidePadLine(width, sideRow++) : config.bg !== "none" ? " ".repeat(width) : "",
 			);
 		const borderRows = (plain: string, edge: "top" | "bottom") =>
-			Array.from({ length: config.thickness }, () => renderBorder(plain, width, edge));
+			Array.from({ length: config.thickness }, (_, i) =>
+				// Frame corners go on the band row adjacent to the content, where
+				// the side borders connect (top band: last row; bottom band: first).
+				renderBorder(plain, width, edge, edge === "top" ? i === config.thickness - 1 : i === 0),
+			);
 
 		const out: string[] = [];
 		if (topIsBorder) {
@@ -733,6 +822,14 @@ function applyEditor(ctx: ExtensionContext, enabled: boolean, notifyUser = true)
 	}
 
 	if (enabled) {
+		if (state.applied) {
+			// Already active: re-creating the editor would needlessly discard its
+			// undo stack, paste state and autocomplete session.
+			config.enabled = true;
+			saveConfig();
+			if (notifyUser) ctx.ui.notify(`neon-editor already on · ${config.preset}/${config.mode} · ${config.intervalMs}ms`, "info");
+			return;
+		}
 		if (!state.capturedPrevious) {
 			const current = ctx.ui.getEditorComponent();
 			state.previousFactory = isNeonFactory(current) ? undefined : current;
@@ -740,6 +837,7 @@ function applyEditor(ctx: ExtensionContext, enabled: boolean, notifyUser = true)
 		}
 
 		ctx.ui.setEditorComponent(createFactory());
+		state.applied = true;
 		config.enabled = true;
 		saveConfig();
 		startTimer();
@@ -750,7 +848,12 @@ function applyEditor(ctx: ExtensionContext, enabled: boolean, notifyUser = true)
 	config.enabled = false;
 	saveConfig();
 	stopTimer();
-	ctx.ui.setEditorComponent(state.capturedPrevious ? state.previousFactory : undefined);
+	// Only touch the editor component when neon is actually the installed
+	// editor — otherwise /neon off would wipe another extension's editor.
+	if (state.applied) {
+		ctx.ui.setEditorComponent(state.capturedPrevious ? state.previousFactory : undefined);
+		state.applied = false;
+	}
 	if (notifyUser) ctx.ui.notify("neon-editor off", "info");
 }
 
@@ -954,6 +1057,7 @@ async function neonMenu(ctx: ExtensionContext): Promise<void> {
 					if (key) {
 						config.fx[key] = !config.fx[key];
 						saveConfig();
+						requestRender();
 					}
 				}
 				break;
@@ -981,6 +1085,7 @@ export default function neonEditor(pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
 		state.capturedPrevious = false;
 		state.previousFactory = undefined;
+		state.applied = false;
 		state.frame = 0;
 		state.ripples = [];
 		state.sendFlash = -1;
@@ -998,6 +1103,7 @@ export default function neonEditor(pi: ExtensionAPI) {
 		state.tui = undefined;
 		state.previousFactory = undefined;
 		state.capturedPrevious = false;
+		state.applied = false;
 		state.ripples = [];
 		state.sendFlash = -1;
 		state.donePulse = -1;
@@ -1048,16 +1154,18 @@ export default function neonEditor(pi: ExtensionAPI) {
 				case "off":
 					applyEditor(ctx, false);
 					return;
-				case "preset":
-					if (!value || !(value in allPresets())) {
+				case "preset": {
+					const name = value.toLowerCase();
+					if (!name || !(name in allPresets())) {
 						ctx.ui.notify(`usage: /neon preset <${Object.keys(allPresets()).join("|")}>`, "warning");
 						return;
 					}
-					config.preset = value;
+					config.preset = name;
 					saveConfig();
 					requestRender();
-					ctx.ui.notify(`neon preset: ${value}`, "info");
+					ctx.ui.notify(`neon preset: ${name}`, "info");
 					return;
+				}
 				case "mode":
 					if (!MODES.includes(value as NeonMode)) {
 						ctx.ui.notify("usage: /neon mode <flow|pulse|static|swing>", "warning");
@@ -1160,6 +1268,7 @@ export default function neonEditor(pi: ExtensionAPI) {
 					}
 					config.fx[name as keyof NeonFx] = toggle === "on";
 					saveConfig();
+					requestRender();
 					ctx.ui.notify(`neon fx ${name}: ${toggle}`, "info");
 					return;
 				}
